@@ -29,12 +29,12 @@ class EntityClassify(PanRepRGCN):
         return features
 
     def build_input_layer(self):
-        return RelGraphConv(self.num_nodes, self.h_dim, self.num_rels, "basis",
+        return RelGraphConv(self.inp_dim, self.h_dim, self.num_rels, "basis",
                 self.num_bases, activation=F.relu, self_loop=self.use_self_loop,
                 dropout=self.dropout)
     # TODO different layers may have different number of hidden units current implementation prevents
     def build_hidden_layer(self, idx):
-        return RelGraphConv(self.inp_dim, self.h_dim, self.num_rels, "basis",
+        return RelGraphConv(self.h_dim, self.h_dim, self.num_rels, "basis",
                 self.num_bases, activation=F.relu, self_loop=self.use_self_loop,
                 dropout=self.dropout)
     def build_class_output_layer(self):
@@ -43,7 +43,7 @@ class EntityClassify(PanRepRGCN):
                 self_loop=self.use_self_loop)
 
     def build_reconstruct_output_layer(self):
-        return RelGraphConv(self.h_dim, self.inp_dim, self.num_rels, "basis",
+        return RelGraphConv(self.h_dim, 1, self.num_rels, "basis",
                 self.num_bases, activation=partial(F.softmax, dim=1),
                 self_loop=self.use_self_loop)
     def build_output_layer(self):
@@ -96,7 +96,7 @@ def main(args):
                            num_classes,
                            num_rels,
                            num_bases=args.n_bases,
-                           num_hidden_layers=args.n_layers - 1,
+                           num_hidden_layers=args.n_layers - 2,
                            dropout=args.dropout,
                            use_self_loop=args.use_self_loop,
                            use_cuda=use_cuda)
@@ -147,8 +147,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='RGCN')
     parser.add_argument("--dropout", type=float, default=0,
             help="dropout probability")
-    parser.add_argument("--n-hidden", type=int, default=16,
-            help="number of hidden units")
+    parser.add_argument("--n-hidden", type=int, default=2,
+            help="number of hidden units") # use 16, 2 for debug
     parser.add_argument("--gpu", type=int, default=-1,
             help="gpu")
     parser.add_argument("--lr", type=float, default=1e-2,

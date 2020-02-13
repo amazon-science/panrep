@@ -22,9 +22,9 @@ class PanRepRGCN(nn.Module):
     def build_model(self):
         self.layers = nn.ModuleList()
         # i2h
-        #i2h = self.build_input_layer()
-        #if i2h is not None:
-            #self.layers.append(i2h)
+        i2h = self.build_input_layer()
+        if i2h is not None:
+            self.layers.append(i2h)
         # h2h
         for idx in range(self.num_hidden_layers):
             h2h = self.build_hidden_layer(idx)
