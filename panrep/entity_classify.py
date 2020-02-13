@@ -18,8 +18,8 @@ from dgl.nn.pytorch import RelGraphConv
 from functools import partial
 from dgl.contrib.data import load_data
 
-from panrep.node_supervision_tasks import node_attribute_reconstruction
-from panrep.model import PanRepRGCN
+from node_supervision_tasks import node_attribute_reconstruction
+from model import PanRepRGCN
 
 class EntityClassify(PanRepRGCN):
     def create_features(self):
