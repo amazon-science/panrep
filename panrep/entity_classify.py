@@ -19,9 +19,9 @@ from functools import partial
 from dgl.contrib.data import load_data
 
 from node_supervision_tasks import node_attribute_reconstruction
-from model import PanRepRGCN
+from model import PanRepRGCN,BaseRGCN
 
-class EntityClassify(PanRepRGCN):
+class Encoder(PanRepRGCN):
     def create_features(self):
         features = torch.arange(self.num_nodes)
         if self.use_cuda:
@@ -48,6 +48,34 @@ class EntityClassify(PanRepRGCN):
                 self_loop=self.use_self_loop)
     def build_output_layer(self):
         return self.build_reconstruct_output_layer()
+
+class myClassifier(BaseRGCN):
+    def create_features(self):
+        features = torch.arange(self.num_nodes)
+        if self.use_cuda:
+            features = features.cuda()
+        return features
+
+    def build_input_layer(self):
+        return RelGraphConv(self.inp_dim, self.h_dim, self.num_rels, "basis",
+                self.num_bases, activation=F.relu, self_loop=self.use_self_loop,
+                dropout=self.dropout)
+    # TODO different layers may have different number of hidden units current implementation prevents
+    def build_hidden_layer(self, idx):
+        return RelGraphConv(self.h_dim, self.h_dim, self.num_rels, "basis",
+                self.num_bases, activation=F.relu, self_loop=self.use_self_loop,
+                dropout=self.dropout)
+    def build_class_output_layer(self):
+        return RelGraphConv(self.h_dim, self.out_dim, self.num_rels, "basis",
+                self.num_bases, activation=partial(F.softmax, dim=1),
+                self_loop=self.use_self_loop)
+
+    def build_reconstruct_output_layer(self):
+        return RelGraphConv(self.h_dim, self.h_dim, self.num_rels, "basis",
+                self.num_bases, activation=partial(F.softmax, dim=1),
+                self_loop=self.use_self_loop)
+    def build_output_layer(self):
+        return self.build_class_output_layer()
 
 # TODO try the reconstruction loss
 def main(args):
@@ -90,16 +118,16 @@ def main(args):
     g.add_edges(data.edge_src, data.edge_dst)
     inp_dim=len(g)
     # create model
-    model = EntityClassify(len(g),
-                           args.n_hidden,
-                           inp_dim,
-                           num_classes,
-                           num_rels,
-                           num_bases=args.n_bases,
-                           num_hidden_layers=args.n_layers - 2,
-                           dropout=args.dropout,
-                           use_self_loop=args.use_self_loop,
-                           use_cuda=use_cuda)
+    model = Encoder(len(g),
+                    args.n_hidden,
+                    inp_dim,
+                    num_classes,
+                    num_rels,
+                    num_bases=args.n_bases,
+                    num_hidden_layers=args.n_layers - 2,
+                    dropout=args.dropout,
+                    use_self_loop=args.use_self_loop,
+                    use_cuda=use_cuda)
 
     if use_cuda:
         model.cuda()
@@ -115,7 +143,7 @@ def main(args):
     for epoch in range(args.n_epochs):
         optimizer.zero_grad()
         t0 = time.time()
-        reconstructed_feats = model(g, feats, edge_type, edge_norm)
+        reconstructed_feats,embedding = model(g, feats, edge_type, edge_norm)
         loss = node_attribute_reconstruction(reconstructed_feats[train_idx], feats[train_idx])
         t1 = time.time()
         loss.backward()
@@ -134,9 +162,68 @@ def main(args):
     print()
 
     model.eval()
-    reconstructed_feats = model.forward(g, feats, edge_type, edge_norm)
+    with torch.no_grad():
+        reconstructed_feats,embedding = model.forward(g, feats, edge_type, edge_norm)
     test_loss = node_attribute_reconstruction(reconstructed_feats[test_idx], feats[test_idx])
     print(" Test loss: {:.4f}".format(test_loss.item()))
+    print()
+
+    print("Mean forward time: {:4f}".format(np.mean(forward_time[len(forward_time) // 4:])))
+    print("Mean backward time: {:4f}".format(np.mean(backward_time[len(backward_time) // 4:])))
+    ###
+    # Use the encoded features for classification
+    # Here we initialize the features using the reconstructed ones
+    feats=embedding
+    inp_dim=feats.shape[1]
+    H=100
+    model = myClassifier(len(g),
+                         args.n_hidden,
+                         inp_dim,
+                         num_classes,
+                         num_rels,
+                         num_bases=args.n_bases,
+                         num_hidden_layers=args.n_layers - 2,
+                         dropout=args.dropout,
+                         use_self_loop=args.use_self_loop,
+                         use_cuda=use_cuda)
+
+    if use_cuda:
+        model.cuda()
+
+    # optimizer
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2norm)
+
+    # training loop
+    print("start training...")
+    forward_time = []
+    backward_time = []
+    model.train()
+    for epoch in range(args.n_epochs):
+        optimizer.zero_grad()
+        t0 = time.time()
+        logits = model(g, feats, edge_type, edge_norm)
+        loss = F.cross_entropy(logits[train_idx], labels[train_idx])
+        t1 = time.time()
+        loss.backward()
+        optimizer.step()
+        t2 = time.time()
+
+        forward_time.append(t1 - t0)
+        backward_time.append(t2 - t1)
+        print("Epoch {:05d} | Train Forward Time(s) {:.4f} | Backward Time(s) {:.4f}".
+              format(epoch, forward_time[-1], backward_time[-1]))
+        train_acc = torch.sum(logits[train_idx].argmax(dim=1) == labels[train_idx]).item() / len(train_idx)
+        val_loss = F.cross_entropy(logits[val_idx], labels[val_idx])
+        val_acc = torch.sum(logits[val_idx].argmax(dim=1) == labels[val_idx]).item() / len(val_idx)
+        print("Train Accuracy: {:.4f} | Train Loss: {:.4f} | Validation Accuracy: {:.4f} | Validation loss: {:.4f}".
+              format(train_acc, loss.item(), val_acc, val_loss.item()))
+    print()
+
+    model.eval()
+    logits = model.forward(g, feats, edge_type, edge_norm)
+    test_loss = F.cross_entropy(logits[test_idx], labels[test_idx])
+    test_acc = torch.sum(logits[test_idx].argmax(dim=1) == labels[test_idx]).item() / len(test_idx)
+    print("Test Accuracy: {:.4f} | Test loss: {:.4f}".format(test_acc, test_loss.item()))
     print()
 
     print("Mean forward time: {:4f}".format(np.mean(forward_time[len(forward_time) // 4:])))
@@ -147,7 +234,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='RGCN')
     parser.add_argument("--dropout", type=float, default=0,
             help="dropout probability")
-    parser.add_argument("--n-hidden", type=int, default=2,
+    parser.add_argument("--n-hidden", type=int, default=20,
             help="number of hidden units") # use 16, 2 for debug
     parser.add_argument("--gpu", type=int, default=-1,
             help="gpu")
@@ -155,7 +242,7 @@ if __name__ == '__main__':
             help="learning rate")
     parser.add_argument("--n-bases", type=int, default=-1,
             help="number of filter weight matrices, default: -1 [use all]")
-    parser.add_argument("--n-layers", type=int, default=2,
+    parser.add_argument("--n-layers", type=int, default=3,
             help="number of propagation rounds")
     parser.add_argument("-e", "--n-epochs", type=int, default=50,
             help="number of training epochs")
