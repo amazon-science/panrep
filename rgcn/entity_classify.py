@@ -18,7 +18,7 @@ from dgl.nn.pytorch import RelGraphConv
 from functools import partial
 from dgl.contrib.data import load_data
 
-from model import BaseRGCN
+from rgcn.model import BaseRGCN
 
 class EntityClassify(BaseRGCN):
     def create_features(self):

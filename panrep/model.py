@@ -1,5 +1,4 @@
 import torch.nn as nn
-
 class PanRepRGCN(nn.Module):
     def __init__(self, num_nodes, h_dim, inp_dim,out_dim, num_rels, num_bases,
                  num_hidden_layers=1, dropout=0,
@@ -46,4 +45,8 @@ class PanRepRGCN(nn.Module):
     def forward(self, g, h, r, norm):
         for layer in self.layers:
             h = layer(g, h, r, norm)
-        return h
+        # TODO write more neatly this layer performs attribute reconstruction
+        m=nn.Linear(self.h_dim,1)
+        h=m(h)
+
+        return h.squeeze()

@@ -43,7 +43,7 @@ class EntityClassify(PanRepRGCN):
                 self_loop=self.use_self_loop)
 
     def build_reconstruct_output_layer(self):
-        return RelGraphConv(self.h_dim, 1, self.num_rels, "basis",
+        return RelGraphConv(self.h_dim, self.h_dim, self.num_rels, "basis",
                 self.num_bases, activation=partial(F.softmax, dim=1),
                 self_loop=self.use_self_loop)
     def build_output_layer(self):
