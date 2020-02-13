@@ -14,68 +14,12 @@ import time
 import torch
 import torch.nn.functional as F
 from dgl import DGLGraph
-from dgl.nn.pytorch import RelGraphConv
-from functools import partial
+from classifiers import ClassifierRGCN
+from encoders import EncoderRGCN
 from dgl.contrib.data import load_data
-
 from node_supervision_tasks import node_attribute_reconstruction
-from model import PanRepRGCN,BaseRGCN
 
-class Encoder(PanRepRGCN):
-    def create_features(self):
-        features = torch.arange(self.num_nodes)
-        if self.use_cuda:
-            features = features.cuda()
-        return features
 
-    def build_input_layer(self):
-        return RelGraphConv(self.inp_dim, self.h_dim, self.num_rels, "basis",
-                self.num_bases, activation=F.relu, self_loop=self.use_self_loop,
-                dropout=self.dropout)
-    # TODO different layers may have different number of hidden units current implementation prevents
-    def build_hidden_layer(self, idx):
-        return RelGraphConv(self.h_dim, self.h_dim, self.num_rels, "basis",
-                self.num_bases, activation=F.relu, self_loop=self.use_self_loop,
-                dropout=self.dropout)
-    def build_class_output_layer(self):
-        return RelGraphConv(self.h_dim, self.out_dim, self.num_rels, "basis",
-                self.num_bases, activation=partial(F.softmax, dim=1),
-                self_loop=self.use_self_loop)
-
-    def build_reconstruct_output_layer(self):
-        return RelGraphConv(self.h_dim, self.h_dim, self.num_rels, "basis",
-                self.num_bases, activation=partial(F.softmax, dim=1),
-                self_loop=self.use_self_loop)
-    def build_output_layer(self):
-        return self.build_reconstruct_output_layer()
-
-class myClassifier(BaseRGCN):
-    def create_features(self):
-        features = torch.arange(self.num_nodes)
-        if self.use_cuda:
-            features = features.cuda()
-        return features
-
-    def build_input_layer(self):
-        return RelGraphConv(self.inp_dim, self.h_dim, self.num_rels, "basis",
-                self.num_bases, activation=F.relu, self_loop=self.use_self_loop,
-                dropout=self.dropout)
-    # TODO different layers may have different number of hidden units current implementation prevents
-    def build_hidden_layer(self, idx):
-        return RelGraphConv(self.h_dim, self.h_dim, self.num_rels, "basis",
-                self.num_bases, activation=F.relu, self_loop=self.use_self_loop,
-                dropout=self.dropout)
-    def build_class_output_layer(self):
-        return RelGraphConv(self.h_dim, self.out_dim, self.num_rels, "basis",
-                self.num_bases, activation=partial(F.softmax, dim=1),
-                self_loop=self.use_self_loop)
-
-    def build_reconstruct_output_layer(self):
-        return RelGraphConv(self.h_dim, self.h_dim, self.num_rels, "basis",
-                self.num_bases, activation=partial(F.softmax, dim=1),
-                self_loop=self.use_self_loop)
-    def build_output_layer(self):
-        return self.build_class_output_layer()
 
 # TODO try the reconstruction loss
 def main(args):
@@ -118,7 +62,7 @@ def main(args):
     g.add_edges(data.edge_src, data.edge_dst)
     inp_dim=len(g)
     # create model
-    model = Encoder(len(g),
+    model = EncoderRGCN(len(g),
                     args.n_hidden,
                     inp_dim,
                     num_classes,
@@ -175,8 +119,7 @@ def main(args):
     # Here we initialize the features using the reconstructed ones
     feats=embedding
     inp_dim=feats.shape[1]
-    H=100
-    model = myClassifier(len(g),
+    model = ClassifierRGCN(len(g),
                          args.n_hidden,
                          inp_dim,
                          num_classes,
