@@ -22,6 +22,8 @@ class PanRepRGCN(nn.Module):
         # create rgcn layers
         self.build_model()
 
+        self.reconstruction_layer = nn.Linear(self.h_dim,self.reconstruct_dim)
+
     def build_model(self):
         self.layers = nn.ModuleList()
         # i2h
@@ -50,8 +52,7 @@ class PanRepRGCN(nn.Module):
         for layer in self.layers:
             h = layer(g, h, r, norm)
         # TODO write more neatly this layer performs attribute reconstruction
-        m=nn.Linear(self.h_dim,self.reconstruct_dim)
-        reconstructed=m(h)
+        reconstructed=self.reconstruction_layer(h)
 
         return reconstructed.squeeze(),h
 
