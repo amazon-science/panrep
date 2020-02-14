@@ -1,4 +1,4 @@
-from model import PanRepRGCN,BaseRGCN
+from base_models import BaseRGCN
 from dgl.nn.pytorch import RelGraphConv
 from functools import partial
 import torch

@@ -1,6 +1,8 @@
 import torch.nn as nn
 import torch as th
 import dgl.function as fn
+from encoders import EncoderRGCN
+from node_supervision_tasks import AttributeDecoder
 
 class PanRepRGCN(nn.Module):
     def __init__(self, num_nodes, h_dim, inp_dim,out_dim, num_rels, num_bases,
@@ -18,127 +20,18 @@ class PanRepRGCN(nn.Module):
         self.dropout = dropout
         self.use_self_loop = use_self_loop
         self.use_cuda = use_cuda
-
+        self.encoder = EncoderRGCN(num_nodes, h_dim, inp_dim, out_dim, num_rels, num_bases,
+                                 num_hidden_layers, dropout, use_self_loop, use_cuda)
         # create rgcn layers
-        self.build_model()
+        #self.encoder.build_model()
 
-        self.reconstruction_layer = nn.Linear(self.h_dim,self.reconstruct_dim)
-
-    def build_model(self):
-        self.layers = nn.ModuleList()
-        # i2h
-        i2h = self.build_input_layer()
-        if i2h is not None:
-            self.layers.append(i2h)
-        # h2h
-        for idx in range(self.num_hidden_layers):
-            h2h = self.build_hidden_layer(idx)
-            self.layers.append(h2h)
-        # h2o
-        h2o = self.build_output_layer()
-        if h2o is not None:
-            self.layers.append(h2o)
-
-    def build_input_layer(self):
-        return None
-
-    def build_hidden_layer(self, idx):
-        raise NotImplementedError
-
-    def build_output_layer(self):
-        return None
+        self.attributeDecoder = AttributeDecoder(self.h_dim,self.reconstruct_dim)
 
     def forward(self, g, h, r, norm):
-        for layer in self.layers:
-            h = layer(g, h, r, norm)
+        h=self.encoder(g,h,r,norm)
+        #for layer in self.layers:
+        #    h = layer(g, h, r, norm)
         # TODO write more neatly this layer performs attribute reconstruction
-        reconstructed=self.reconstruction_layer(h)
+        reconstructed=self.attributeDecoder(h)
 
         return reconstructed.squeeze(),h
-
-class BaseRGCN(nn.Module):
-    def __init__(self, num_nodes, h_dim,inp_dim, out_dim, num_rels, num_bases,
-                 num_hidden_layers=1, dropout=0,
-                 use_self_loop=False, use_cuda=False):
-        super(BaseRGCN, self).__init__()
-        self.num_nodes = num_nodes
-        self.h_dim = h_dim
-        self.inp_dim=inp_dim
-        self.out_dim = out_dim
-        self.num_rels = num_rels
-        self.num_bases = None if num_bases < 0 else num_bases
-        self.num_hidden_layers = num_hidden_layers
-        self.dropout = dropout
-        self.use_self_loop = use_self_loop
-        self.use_cuda = use_cuda
-
-        # create rgcn layers
-        self.build_model()
-
-    def build_model(self):
-        self.layers = nn.ModuleList()
-        # i2h
-        i2h = self.build_input_layer()
-        if i2h is not None:
-            self.layers.append(i2h)
-        # h2h
-        for idx in range(self.num_hidden_layers):
-            h2h = self.build_hidden_layer(idx)
-            self.layers.append(h2h)
-        # h2o
-        h2o = self.build_output_layer()
-        if h2o is not None:
-            self.layers.append(h2o)
-
-    def build_input_layer(self):
-        return None
-
-    def build_hidden_layer(self, idx):
-        raise NotImplementedError
-
-    def build_output_layer(self):
-        return None
-
-    def forward(self, g, h, r, norm):
-        for layer in self.layers:
-            h = layer(g, h, r, norm)
-        return h
-'''
-
-class PanRepRGCN(nn.Module):
-    def __init__(self, num_nodes, h_dim, inp_dim,out_dim, num_rels, num_bases,
-                 num_hidden_layers=1, dropout=0,
-                 use_self_loop=False, use_cuda=False):
-        super(PanRepRGCN, self).__init__()
-        self.num_nodes = num_nodes
-        self.h_dim = h_dim
-        self.inp_dim=inp_dim
-        self.out_dim = out_dim
-        self.num_rels = num_rels
-        self.num_bases = None if num_bases < 0 else num_bases
-        self.num_hidden_layers = num_hidden_layers
-        self.dropout = dropout
-        self.use_self_loop = use_self_loop
-        self.use_cuda = use_cuda
-        self.baseRGCN=BaseRGCN(num_nodes, h_dim,inp_dim, out_dim, num_rels, num_bases,
-                 num_hidden_layers, dropout,use_self_loop, use_cuda)
-        # create rgcn layers
-        self.baseRGCN.build_model()
-
-    def build_input_layer(self):
-        return None
-
-    def build_hidden_layer(self, idx):
-        raise NotImplementedError
-
-    def build_output_layer(self):
-        return None
-
-    def forward(self, g, h, r, norm):
-        h=self.baseRGCN(g,h,r,norm)
-        # TODO write more neatly this layer performs attribute reconstruction
-        m=nn.Linear(self.h_dim,1)
-        reconstructed=m(h)
-
-        return reconstructed.squeeze(),h
-'''

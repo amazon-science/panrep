@@ -15,6 +15,7 @@ import torch
 import torch.nn.functional as F
 from dgl import DGLGraph
 from classifiers import ClassifierRGCN
+from model import PanRepRGCN
 from encoders import EncoderRGCN
 from dgl.contrib.data import load_data
 from node_supervision_tasks import node_attribute_reconstruction
@@ -62,7 +63,7 @@ def main(args):
     g.add_edges(data.edge_src, data.edge_dst)
     inp_dim=len(g)
     # create model
-    model = EncoderRGCN(len(g),
+    model = PanRepRGCN(len(g),
                     args.n_hidden,
                     inp_dim,
                     num_classes,

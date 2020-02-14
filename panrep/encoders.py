@@ -1,4 +1,4 @@
-from model import PanRepRGCN
+from base_models import BaseRGCN
 from dgl.nn.pytorch import RelGraphConv
 from functools import partial
 import torch
@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 #TODO SEE DGI code architecture and inspire similar context. add the dgi losses
 
-class EncoderRGCN(PanRepRGCN):
+class EncoderRGCN(BaseRGCN):
     def create_features(self):
         features = torch.arange(self.num_nodes)
         if self.use_cuda:
