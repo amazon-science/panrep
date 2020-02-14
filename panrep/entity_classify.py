@@ -179,13 +179,13 @@ if __name__ == '__main__':
             help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=16,
             help="number of hidden units") # use 16, 2 for debug
-    parser.add_argument("--gpu", type=int, default=-1,
+    parser.add_argument("--gpu", type=int, default=0,
             help="gpu")
     parser.add_argument("--lr", type=float, default=1e-2,
             help="learning rate")
     parser.add_argument("--n-bases", type=int, default=-1,
             help="number of filter weight matrices, default: -1 [use all]")
-    parser.add_argument("--n-layers", type=int, default=3,
+    parser.add_argument("--n-layers", type=int, default=2,
             help="number of propagation rounds")
     parser.add_argument("-e", "--n-epochs", type=int, default=100,
             help="number of training epochs")
