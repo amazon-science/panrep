@@ -12,6 +12,16 @@ class AttributeDecoder(nn.Module):
         h=self.reconstruction_layer(h)
         return h
 
+class multipleAttributeDecoder(nn.Module):
+    def __init__(self,G, h_dim, use_cuda=False):
+        super(multipleAttributeDecoder, self).__init__()
+        self.h_dim=h_dim
+        self.G=G
+        self.reconstruction_layer = nn.Linear(self.h_dim, self.reconstruct_dim)
+    def forward(self, h):
+        h=self.reconstruction_layer(h)
+        return h
+
 def node_attribute_reconstruction(reconstructed_feats,feats):
     feats=feats.float()
     loss_train = F.mse_loss(reconstructed_feats, feats)
