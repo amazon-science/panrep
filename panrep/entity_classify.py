@@ -130,7 +130,7 @@ def rgcn_hetero(args):
         #train_idx = train_idx.cuda()
         #test_idx = test_idx.cuda()
 
-    device = torch.device("cuda:" + str(use_cuda) if use_cuda else "cpu")
+    device = torch.device("cuda:" + str(args.gpu) if use_cuda else "cpu")
         # create model
     model = PanRepRGCNHetero(g,
                            args.n_hidden,
