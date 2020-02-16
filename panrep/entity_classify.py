@@ -370,7 +370,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='RGCN')
     parser.add_argument("--dropout", type=float, default=0,
             help="dropout probability")
-    parser.add_argument("--n-hidden", type=int, default=16,
+    parser.add_argument("--n-hidden", type=int, default=80,
             help="number of hidden units") # use 16, 2 for debug
     parser.add_argument("--gpu", type=int, default=0,
             help="gpu")
@@ -380,7 +380,7 @@ if __name__ == '__main__':
             help="number of filter weight matrices, default: -1 [use all]")
     parser.add_argument("--n-layers", type=int, default=3,
             help="number of propagation rounds")
-    parser.add_argument("-e", "--n-epochs", type=int, default=2,
+    parser.add_argument("-e", "--n-epochs", type=int, default=2000,
             help="number of training epochs")
     parser.add_argument("-d", "--dataset", type=str, required=True,
             help="dataset to use")
