@@ -346,7 +346,7 @@ if __name__ == '__main__':
             help="learning rate")
     parser.add_argument("--n-bases", type=int, default=-1,
             help="number of filter weight matrices, default: -1 [use all]")
-    parser.add_argument("--n-layers", type=int, default=2,
+    parser.add_argument("--n-layers", type=int, default=3,
             help="number of propagation rounds")
     parser.add_argument("-e", "--n-epochs", type=int, default=50,
             help="number of training epochs")

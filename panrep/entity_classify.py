@@ -14,9 +14,9 @@ import time
 import torch
 import torch.nn.functional as F
 from dgl import DGLGraph
-from classifiers import ClassifierRGCN
+from classifiers import ClassifierRGCN,ClassifierMLP
 from model import PanRepRGCN,PanRepRGCNHetero
-from encoders import EncoderRGCN
+from sklearn.metrics import roc_auc_score
 from dgl.contrib.data import load_data
 from node_supervision_tasks import node_attribute_reconstruction
 import random
@@ -50,11 +50,11 @@ def load_db_data(args):
 
     # In[13]:
 
-    G = pickle.load(open(os.patorch.join(data_folder, 'graph_0.001.pickle'), "rb")).to(device)
+    G = pickle.load(open(os.path.join(data_folder, 'graph_0.001.pickle'), "rb")).to(device)
 
     # In[14]:
 
-    labels = pickle.load(open(os.patorch.join(data_folder, 'labels.pickle'), "rb"))
+    labels = pickle.load(open(os.path.join(data_folder, 'labels.pickle'), "rb"))
 
     # In[15]:
 
@@ -82,18 +82,9 @@ def load_db_data(args):
     train_idx = np.array(train_idx);
     test_idx = np.array(test_idx);
     val_idx = np.array(val_idx);
-    return train_idx,test_idx,val_idx,labels,G.etypes,
-    # In[19]:
-    '''
-    train_indices = torch.tensor(train_idx).to(device);
-    valid_indices = torch.tensor(val_idx).to(device);
-    test_indices = torch.tensor(test_idx).to(device);
-    num_train = len(train_indices);
-    num_valid = len(valid_indices);
-    num_test = len(test_indices);
-
-    print(num_train, num_valid, num_test)
-    '''
+    category='history'
+    num_classes=1
+    return train_idx,test_idx,val_idx,labels,G,category,num_classes
 
 # TODO try the reconstruction loss
 def load_gen_data(args):
@@ -117,37 +108,19 @@ def load_gen_data(args):
     return num_nodes,num_rels,num_classes,train_idx,test_idx,val_idx,labels,feats,data.edge_type,data.edge_norm,data.edge_src,data.edge_dst
 
 def main(args):
-    rgcn(args)
+    rgcn_hetero(args)
 
 def rgcn_hetero(args):
-    if args.dataset == 'aifb':
-        dataset = AIFB()
-    elif args.dataset == 'mutag':
-        dataset = MUTAG()
-    elif args.dataset == 'bgs':
-        dataset = BGS()
-    elif args.dataset == 'am':
-        dataset = AM()
+    if args.dataset == "database_data":
+        train_idx,test_idx,val_idx,labels,g,category,num_classes=load_db_data(args)
     else:
-        raise ValueError()
+        raise NotImplementedError
 
-    g = dataset.graph
-    category = dataset.predict_category
-    num_classes = dataset.num_classes
-    train_idx = dataset.train_idx
-    test_idx = dataset.test_idx
-    labels = dataset.labels
+
     category_id = len(g.ntypes)
     for i, ntype in enumerate(g.ntypes):
         if ntype == category:
             category_id = i
-
-    # split dataset into train, validate, test
-    if args.validation:
-        val_idx = train_idx[:len(train_idx) // 5]
-        train_idx = train_idx[len(train_idx) // 5:]
-    else:
-        val_idx = train_idx
 
     # check cuda
     use_cuda = args.gpu >= 0 and torch.cuda.is_available()
@@ -157,26 +130,16 @@ def rgcn_hetero(args):
         train_idx = train_idx.cuda()
         test_idx = test_idx.cuda()
 
+    device = torch.device("cuda:" + str(use_cuda) if use_cuda else "cpu")
         # create model
     model = PanRepRGCNHetero(g,
-                           args.n_hidden,inp_dim,
+                           args.n_hidden,
                            num_classes,
                            num_bases=args.n_bases,
                            num_hidden_layers=args.n_layers - 2,
                            dropout=args.dropout,
                            use_self_loop=args.use_self_loop)
 
-    model = PanRepRGCN(len(g),
-                       args.n_hidden,
-                       inp_dim,
-                       num_classes,
-                       num_rels,
-                       num_bases=args.n_bases,
-                       num_hidden_layers=args.n_layers - 2,
-                       dropout=args.dropout,
-                       use_self_loop=args.use_self_loop,
-                       use_cuda=use_cuda)
-
     if use_cuda:
         model.cuda()
 
@@ -191,10 +154,7 @@ def rgcn_hetero(args):
     for epoch in range(args.n_epochs):
         optimizer.zero_grad()
         t0 = time.time()
-        reconstructed_feats, embeddings = model()
-        embedding=embeddings[category_id]
-        reconstructed_feat=reconstructed_feats[category_id]
-        loss = node_attribute_reconstruction(reconstructed_feat[train_idx], feats[train_idx])
+        loss, embeddings = model()
         t1 = time.time()
         loss.backward()
         optimizer.step()
@@ -204,37 +164,22 @@ def rgcn_hetero(args):
         backward_time.append(t2 - t1)
         print("Epoch {:05d} | Train Forward Time(s) {:.4f} | Backward Time(s) {:.4f}".
               format(epoch, forward_time[-1], backward_time[-1]))
-        # train_acc = torch.sum(reconstructed_feats[train_idx].argmax(dim=1) == feats[train_idx]).item() / len(train_idx)
-        val_loss = node_attribute_reconstruction(reconstructed_feat[val_idx], feats[val_idx])
-        # val_acc = torch.sum(reconstructed_feats[val_idx].argmax(dim=1) == feats[val_idx]).item() / len(val_idx)
-        print("Train Loss: {:.4f} |  Validation loss: {:.4f}".
-              format(loss.item(), val_loss.item()))
+        print("Train Loss: {:.4f}".
+              format(loss.item()))
     print()
 
     model.eval()
     with torch.no_grad():
-        reconstructed_feat, embedding = model.forward(g, feats, edge_type, edge_norm)
-    test_loss = node_attribute_reconstruction(reconstructed_feat[test_idx], feats[test_idx])
-    print(" Test loss: {:.4f}".format(test_loss.item()))
-    print()
+        reconstructed_feat, embeddings = model.forward()
 
     print("Mean forward time: {:4f}".format(np.mean(forward_time[len(forward_time) // 4:])))
     print("Mean backward time: {:4f}".format(np.mean(backward_time[len(backward_time) // 4:])))
     ###
     # Use the encoded features for classification
     # Here we initialize the features using the reconstructed ones
-    feats = embedding
+    feats = embeddings[category_id]
     inp_dim = feats.shape[1]
-    model = ClassifierRGCN(len(g),
-                           args.n_hidden,
-                           inp_dim,
-                           num_classes,
-                           num_rels,
-                           num_bases=args.n_bases,
-                           num_hidden_layers=args.n_layers - 2,
-                           dropout=args.dropout,
-                           use_self_loop=args.use_self_loop,
-                           use_cuda=use_cuda)
+    model = ClassifierMLP(input_size=inp_dim, hidden_size=args.n_hidden,out_size=num_classes)
 
     if use_cuda:
         model.cuda()
@@ -247,36 +192,39 @@ def rgcn_hetero(args):
     forward_time = []
     backward_time = []
     model.train()
+    train_indices = torch.tensor(train_idx).to(device);
+    valid_indices = torch.tensor(val_idx).to(device);
+    test_indices = torch.tensor(test_idx).to(device);
+    best_val_acc = 0
+    best_test_acc = 0
+
     for epoch in range(args.n_epochs):
         optimizer.zero_grad()
-        t0 = time.time()
-        logits = model(g, feats, edge_type, edge_norm)
-        loss = F.cross_entropy(logits[train_idx], labels[train_idx])
-        t1 = time.time()
+        logits = model(feats)
+        loss = F.binary_cross_entropy_with_logits(logits[train_idx].squeeze(1), labels[train_idx].type(torch.FloatTensor).to(device))
         loss.backward()
         optimizer.step()
-        t2 = time.time()
+        # TODO is this step slowing down because of CPU?
+        pred = torch.sigmoid(logits).detach().cpu().numpy()
+        train_acc = roc_auc_score(labels.cpu()[train_indices.cpu()].numpy(), pred[train_indices.cpu()])
+        val_acc = roc_auc_score(labels.cpu()[valid_indices.cpu()].numpy(), pred[valid_indices.cpu()])
+        test_acc = roc_auc_score(labels.cpu()[test_indices.cpu()].numpy(), pred[test_indices.cpu()])
 
-        forward_time.append(t1 - t0)
-        backward_time.append(t2 - t1)
-        print("Epoch {:05d} | Train Forward Time(s) {:.4f} | Backward Time(s) {:.4f}".
-              format(epoch, forward_time[-1], backward_time[-1]))
-        train_acc = torch.sum(logits[train_idx].argmax(dim=1) == labels[train_idx]).item() / len(train_idx)
-        val_loss = F.cross_entropy(logits[val_idx], labels[val_idx])
-        val_acc = torch.sum(logits[val_idx].argmax(dim=1) == labels[val_idx]).item() / len(val_idx)
-        print("Train Accuracy: {:.4f} | Train Loss: {:.4f} | Validation Accuracy: {:.4f} | Validation loss: {:.4f}".
-              format(train_acc, loss.item(), val_acc, val_loss.item()))
+        if best_val_acc < val_acc:
+            best_val_acc = val_acc
+            best_test_acc = test_acc
+
+        if epoch % 5 == 0:
+            print('Loss %.4f, Train Acc %.4f, Val Acc %.4f (Best %.4f), Test Acc %.4f (Best %.4f)' % (
+                loss.item(),
+                train_acc.item(),
+                val_acc.item(),
+                best_val_acc.item(),
+                test_acc.item(),
+                best_test_acc.item(),
+            ))
     print()
 
-    model.eval()
-    logits = model.forward(g, feats, edge_type, edge_norm)
-    test_loss = F.cross_entropy(logits[test_idx], labels[test_idx])
-    test_acc = torch.sum(logits[test_idx].argmax(dim=1) == labels[test_idx]).item() / len(test_idx)
-    print("Test Accuracy: {:.4f} | Test loss: {:.4f}".format(test_acc, test_loss.item()))
-    print()
-
-    print("Mean forward time: {:4f}".format(np.mean(forward_time[len(forward_time) // 4:])))
-    print("Mean backward time: {:4f}".format(np.mean(backward_time[len(backward_time) // 4:])))
 
 
 def rgcn(args):
@@ -430,9 +378,9 @@ if __name__ == '__main__':
             help="learning rate")
     parser.add_argument("--n-bases", type=int, default=-1,
             help="number of filter weight matrices, default: -1 [use all]")
-    parser.add_argument("--n-layers", type=int, default=2,
+    parser.add_argument("--n-layers", type=int, default=3,
             help="number of propagation rounds")
-    parser.add_argument("-e", "--n-epochs", type=int, default=100,
+    parser.add_argument("-e", "--n-epochs", type=int, default=2,
             help="number of training epochs")
     parser.add_argument("-d", "--dataset", type=str, required=True,
             help="dataset to use")
@@ -447,7 +395,7 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'aifb'])
+    args = parser.parse_args(['--dataset', 'database_data'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     main(args)

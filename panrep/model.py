@@ -2,7 +2,7 @@ import torch.nn as nn
 import torch as th
 import dgl.function as fn
 from encoders import EncoderRGCN,EncoderRelGraphConvHetero
-from node_supervision_tasks import AttributeDecoder,multipleAttributeDecoder
+from node_supervision_tasks import AttributeDecoder,MultipleAttributeDecoder
 
 class PanRepRGCN(nn.Module):
     def __init__(self, num_nodes, h_dim, inp_dim,out_dim, num_rels, num_bases,
@@ -54,9 +54,11 @@ class PanRepRGCNHetero(nn.Module):
         self.num_bases = None if num_bases < 0 else num_bases
         self.num_hidden_layers = num_hidden_layers
         self.dropout = dropout
+        self.num_bases=num_bases
         self.use_self_loop = use_self_loop
+        self.G=g
         #self.use_cuda = use_cuda
-        self.encoder = EncoderRelGraphConvHetero(g,
+        self.encoder = EncoderRelGraphConvHetero(self.G,
                  self.h_dim, self.out_dim,
                  self.num_bases,
                  self.num_hidden_layers,
@@ -65,11 +67,15 @@ class PanRepRGCNHetero(nn.Module):
         # create rgcn layers
         # self.encoder.build_model()
         # G.nodes['transaction'].data['features']
-        self.attributeDecoder = multipleAttributeDecoder(self.G,self.h_dim)
+        self.out_size_dict = {};
+        for name in self.G.ntypes:
+            self.out_size_dict[name] = self.G.nodes[name].data['features'].size(1);
+        self.attributeDecoder = MultipleAttributeDecoder(
+            out_size_dict=self.out_size_dict, in_size=self.h_dim, G=self.G)
 
     def forward(self):
         h=self.encoder()
         # TODO write more neatly this layer performs attribute reconstruction
-        reconstructed=self.attributeDecoder(h)
+        reconstruct_loss=self.attributeDecoder(h)
 
-        return reconstructed.squeeze(),h
+        return reconstruct_loss,h

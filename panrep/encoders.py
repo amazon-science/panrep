@@ -165,6 +165,20 @@ class RelGraphConvHetero(nn.Module):
         return hs
 
 
+class HeteroRGCNLayerFirst(nn.Module):
+    def __init__(self, in_size_dict, out_size, ntypes):
+        super(HeteroRGCNLayerFirst, self).__init__()
+        # W_r for each node
+        self.weight = nn.ModuleDict({
+            name: nn.Linear(in_size_dict[name], out_size, bias=False) for name in ntypes
+        })
+
+    def forward(self, G):
+        for name in self.weight:
+            G.apply_nodes(lambda nodes: {'h': self.weight[name](nodes.data['features'])}, ntype=name);
+        hs = [G.nodes[ntype].data['h'] for ntype in G.ntypes]
+        return hs
+
 class RelGraphConvHeteroEmbed(nn.Module):
     r"""Embedding layer for featureless heterograph."""
 
@@ -237,26 +251,27 @@ class RelGraphConvHeteroEmbed(nn.Module):
 
 class EncoderRelGraphConvHetero(nn.Module):
     def __init__(self,
-                 g,
+                 G,
                  h_dim, out_dim,
-                 num_bases,
+                 num_bases=-1,
                  num_hidden_layers=1,
                  dropout=0,
                  use_self_loop=False):
         super(EncoderRelGraphConvHetero, self).__init__()
-        self.g = g
+        self.G = G
         self.h_dim = h_dim
         self.out_dim = out_dim
-        self.rel_names = list(set(g.etypes))
+        self.rel_names = list(set(G.etypes))
         self.rel_names.sort()
         self.num_bases = None if num_bases < 0 else num_bases
         self.num_hidden_layers = num_hidden_layers
         self.dropout = dropout
         self.use_self_loop = use_self_loop
+        self.in_size_dict = {};
+        for name in self.G.ntypes:
+            self.in_size_dict[name] = self.G.nodes[name].data['features'].size(1);
 
-        self.embed_layer = RelGraphConvHeteroEmbed(
-            self.h_dim, g, activation=F.relu, self_loop=self.use_self_loop,
-            dropout=self.dropout)
+        self.embed_layer = HeteroRGCNLayerFirst(self.in_size_dict, h_dim, G.ntypes)
         self.layers = nn.ModuleList()
         # h2h
         for i in range(self.num_hidden_layers):
@@ -271,7 +286,7 @@ class EncoderRelGraphConvHetero(nn.Module):
         #    self_loop=self.use_self_loop))
 
     def forward(self):
-        h = self.embed_layer()
+        h = self.embed_layer(self.G)
         for layer in self.layers:
-            h = layer(self.g, h)
+            h = layer(self.G, h)
         return h
