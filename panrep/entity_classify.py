@@ -127,8 +127,8 @@ def rgcn_hetero(args):
     if use_cuda:
         torch.cuda.set_device(args.gpu)
         labels = labels.cuda()
-        train_idx = train_idx.cuda()
-        test_idx = test_idx.cuda()
+        #train_idx = train_idx.cuda()
+        #test_idx = test_idx.cuda()
 
     device = torch.device("cuda:" + str(use_cuda) if use_cuda else "cpu")
         # create model
