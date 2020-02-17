@@ -179,75 +179,6 @@ class HeteroRGCNLayerFirst(nn.Module):
         hs = [G.nodes[ntype].data['h'] for ntype in G.ntypes]
         return hs
 
-class RelGraphConvHeteroEmbed(nn.Module):
-    r"""Embedding layer for featureless heterograph."""
-
-    def __init__(self,
-                 embed_size,
-                 g,
-                 bias=True,
-                 activation=None,
-                 self_loop=False,
-                 dropout=0.0):
-        super(RelGraphConvHeteroEmbed, self).__init__()
-        self.embed_size = embed_size
-        self.g = g
-        self.bias = bias
-        self.activation = activation
-        self.self_loop = self_loop
-
-        # create weight embeddings for each node for each relation
-        self.embeds = nn.ParameterDict()
-        for srctype, etype, dsttype in g.canonical_etypes:
-            embed = nn.Parameter(torch.Tensor(g.number_of_nodes(srctype), self.embed_size))
-            nn.init.xavier_uniform_(embed, gain=nn.init.calculate_gain('relu'))
-            self.embeds["{}-{}-{}".format(srctype, etype, dsttype)] = embed
-
-        # bias
-        if self.bias:
-            self.h_bias = nn.Parameter(torch.Tensor(embed_size))
-            nn.init.zeros_(self.h_bias)
-
-        # weight for self loop
-        if self.self_loop:
-            self.self_embeds = nn.ParameterList()
-            for ntype in g.ntypes:
-                embed = nn.Parameter(torch.Tensor(g.number_of_nodes(ntype), embed_size))
-                nn.init.xavier_uniform_(embed,
-                                        gain=nn.init.calculate_gain('relu'))
-                self.self_embeds.append(embed)
-
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self):
-        """ Forward computation
-
-        Returns
-        -------
-        torch.Tensor
-            New node features.
-        """
-        g = self.g.local_var()
-        funcs = {}
-        for i, (srctype, etype, dsttype) in enumerate(g.canonical_etypes):
-            g.nodes[srctype].data['embed-%d' % i] = self.embeds["{}-{}-{}".format(srctype, etype, dsttype)]
-            funcs[(srctype, etype, dsttype)] = (fn.copy_u('embed-%d' % i, 'm'), fn.mean('m', 'h'))
-        g.multi_update_all(funcs, 'sum')
-
-        hs = [g.nodes[ntype].data['h'] for ntype in g.ntypes]
-        for i in range(len(hs)):
-            h = hs[i]
-            # apply bias and activation
-            if self.self_loop:
-                h = h + self.self_embeds[i]
-            if self.bias:
-                h = h + self.h_bias
-            if self.activation:
-                h = self.activation(h)
-            h = self.dropout(h)
-            hs[i] = h
-        return hs
-
 
 class EncoderRelGraphConvHetero(nn.Module):
     def __init__(self,
@@ -279,14 +210,22 @@ class EncoderRelGraphConvHetero(nn.Module):
                 self.h_dim, self.h_dim, self.rel_names, "basis",
                 self.num_bases, activation=F.relu, self_loop=self.use_self_loop,
                 dropout=self.dropout))
-        # h2o
-        #self.layers.append(RelGraphConvHetero(
-        #    self.h_dim, self.out_dim, self.rel_names, "basis",
-        #    self.num_bases, activation=partial(F.softmax, dim=1),
-        #    self_loop=self.use_self_loop))
 
-    def forward(self):
-        h = self.embed_layer(self.G)
+    def forward(self,corrupt=False):
+        if corrupt:
+            # create local variable do not permute the original graph
+            g = self.G.local_var()
+            for key in self.in_size_dict:
+                # TODO possibly high complexity here??
+                # The following implements the permutation of features within each node class.
+                # for the negative sample in the information maximization step
+                perm = torch.randperm(g.nodes[key].data['features'].shape[0])
+                g.nodes[key].data['features']=g.nodes[key].data['features'][perm]
+
+
+        else:
+            g=self.G
+        h = self.embed_layer(g)
         for layer in self.layers:
-            h = layer(self.G, h)
+            h = layer(g, h)
         return h

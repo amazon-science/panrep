@@ -132,13 +132,18 @@ def rgcn_hetero(args):
 
     device = torch.device("cuda:" + str(args.gpu) if use_cuda else "cpu")
         # create model
+
+    use_reconstruction_loss=True
+    use_infomax_loss=True
     model = PanRepRGCNHetero(g,
                            args.n_hidden,
                            num_classes,
                            num_bases=args.n_bases,
                            num_hidden_layers=args.n_layers - 2,
                            dropout=args.dropout,
-                           use_self_loop=args.use_self_loop)
+                           use_self_loop=args.use_self_loop,
+                           use_infomax_loss=use_infomax_loss,
+                           use_reconstruction_loss=use_reconstruction_loss)
 
     if use_cuda:
         model.cuda()
@@ -368,19 +373,19 @@ def rgcn(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='RGCN')
-    parser.add_argument("--dropout", type=float, default=0,
+    parser.add_argument("--dropout", type=float, default=0.3,
             help="dropout probability")
-    parser.add_argument("--n-hidden", type=int, default=80,
+    parser.add_argument("--n-hidden", type=int, default=50,
             help="number of hidden units") # use 16, 2 for debug
     parser.add_argument("--gpu", type=int, default=0,
             help="gpu")
     parser.add_argument("--lr", type=float, default=1e-2,
             help="learning rate")
-    parser.add_argument("--n-bases", type=int, default=-1,
+    parser.add_argument("--n-bases", type=int, default=10,
             help="number of filter weight matrices, default: -1 [use all]")
-    parser.add_argument("--n-layers", type=int, default=3,
+    parser.add_argument("--n-layers", type=int, default=4,
             help="number of propagation rounds")
-    parser.add_argument("-e", "--n-epochs", type=int, default=500,
+    parser.add_argument("-e", "--n-epochs", type=int, default=1000,
             help="number of training epochs")
     parser.add_argument("-d", "--dataset", type=str, required=True,
             help="dataset to use")
