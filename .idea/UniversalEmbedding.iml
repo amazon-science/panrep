@@ -5,8 +5,10 @@
       <sourceFolder url="file://$MODULE_DIR$/panrep" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/rgcn" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/rgcn-hetero" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/aux_files" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/aux_files/han" isTestSource="false" />
     </content>
-    <orderEntry type="jdk" jdkName="Remote Python 3.6.10 (sftp://ubuntu@18.218.124.127:22/home/ubuntu/anaconda3/envs/my_dgl/bin/python)" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="Python 3.7 (my_dgl)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
 </module>
