@@ -212,7 +212,7 @@ class EncoderRelGraphConvHetero(nn.Module):
                 self.num_bases, activation=F.relu, self_loop=self.use_self_loop,
                 dropout=self.dropout))
 
-    def forward(self,corrupt=False):
+    def forward(self, corrupt=False):
         if corrupt:
             # create local variable do not permute the original graph
             g = self.G.local_var()
@@ -221,11 +221,11 @@ class EncoderRelGraphConvHetero(nn.Module):
                 # The following implements the permutation of features within each node class.
                 # for the negative sample in the information maximization step
                 perm = torch.randperm(g.nodes[key].data['features'].shape[0])
-                g.nodes[key].data['features']=g.nodes[key].data['features'][perm]
+                g.nodes[key].data['features'] = g.nodes[key].data['features'][perm]
 
 
         else:
-            g=self.G
+            g = self.G
 
         h = self.embed_layer(g)
         for layer in self.layers:

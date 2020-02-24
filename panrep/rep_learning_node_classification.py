@@ -45,11 +45,12 @@ def rgcn_hetero(args):
         #train_idx = train_idx.cuda()
         #test_idx = test_idx.cuda()
 
+
     device = torch.device("cuda:" + str(args.gpu) if use_cuda else "cpu")
         # create model
     #dgl.contrib.sampling.sampler.EdgeSampler(g['customer_to_transaction'], batch_size=100)
     use_reconstruction_loss=True
-    use_infomax_loss=False
+    use_infomax_loss=True
     num_masked_nodes = args.n_masked_nodes
     node_masking= True
     loss_over_all_nodes=True
@@ -326,7 +327,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='RGCN')
     parser.add_argument("--dropout", type=float, default=0.3,
             help="dropout probability")
-    parser.add_argument("--n-hidden", type=int, default=50,
+    parser.add_argument("--n-hidden", type=int, default=40,
             help="number of hidden units") # use 16, 2 for debug
     parser.add_argument("--gpu", type=int, default=0,
             help="gpu")
@@ -336,9 +337,9 @@ if __name__ == '__main__':
             help="number of filter weight matrices, default: -1 [use all]")
     parser.add_argument("--n-layers", type=int, default=4,
             help="number of propagation rounds")
-    parser.add_argument("-e", "--n-epochs", type=int, default=1000,
+    parser.add_argument("-e", "--n-epochs", type=int, default=200,
             help="number of training epochs")
-    parser.add_argument("-num_masked", "--n-masked-nodes", type=int, default=1000,
+    parser.add_argument("-num_masked", "--n-masked-nodes", type=int, default=100,
                         help="number of masked nodes")
     parser.add_argument("-d", "--dataset", type=str, required=True,
             help="dataset to use")
