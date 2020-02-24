@@ -67,7 +67,8 @@ def load_db_data(args):
     val_idx = np.array(val_idx);
     category='history'
     num_classes=1
-    return train_idx,test_idx,val_idx,labels,G,category,num_classes
+    featless_node_types = ['brand', 'customer', 'chain', 'market', 'dept', 'category', 'company']
+    return train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types
 
 
 def load_gen_data(args):

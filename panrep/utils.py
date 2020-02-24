@@ -7,6 +7,7 @@ https://github.com/MichSchli/RelationPrediction
 
 import numpy as np
 import torch
+import random
 import dgl
 
 #######################################################################
@@ -124,6 +125,66 @@ def comp_deg_norm(g):
     norm = 1.0 / in_deg
     norm[np.isinf(norm)] = 0
     return norm
+def masked_nodes(g,num_nodes,masked_node_types):
+    masked_nodes={}
+    for ntype in g.ntypes:
+        mnnodes=num_nodes
+        if ntype not in masked_node_types:
+            masked_ids=list(range(g.nodes[ntype].data['features'].shape[0]))
+            if mnnodes>g.nodes[ntype].data['features'].shape[0]:
+                mnnodes=g.nodes[ntype].data['features'].shape[0]
+            random.shuffle(masked_ids)
+            masked_ids=masked_ids[:mnnodes]
+            masked_nodes[ntype]=masked_ids
+            g.nodes[ntype].data['masked_values'] = g.nodes[ntype].data['features']
+            new_val=torch.zeros((mnnodes,g.nodes[ntype].data['features'].shape[1]))
+            if g.nodes[ntype].data['features'].is_cuda:
+                new_val=new_val.cuda()
+
+
+            g.nodes[ntype].data['features'][masked_ids,:]=new_val
+
+    return masked_nodes,g
+def unmask_nodes(g,masked_node_types):
+    for ntype in g.ntypes:
+        if ntype not in masked_node_types:
+                g.nodes[ntype].data['features']=g.nodes[ntype].data['masked_values']
+    return g
+
+def context_nodes(node_list,l1,l2,k):
+    '''
+
+    :param node_list: The node list containing the ids of the nodes whose context is needed
+    :param l1: The minimum hop nodes are away from central node
+    :param l2: The maximum hop nodes are away from central node
+    :param k: parameter determining the 'relevant' substructure per node
+    :return:
+    '''
+    def hop_away_nodes(k,node):
+        '''
+        Return nodes k hop away
+        :param k: k hops away
+        :param node: central node id
+        :return:
+        '''
+    context_nodes={}
+    for node in node_list:
+        context_nodes[node] = set(hop_away_nodes(l1,node)).symmetric_difference(
+            set(hop_away_nodes(l2,node)))
+
+    return context_nodes
+def sub_graph(g,num_sampled_edges,negative_rate):
+    pos_samples={}
+    neg_samples={}
+    edges={}
+    for etype in g.etypes():
+        pos_samples[etype]=[]
+        g.all_edges(form='all', etype=etype)
+
+
+    # create function consuming pos
+    return
+
 
 def build_graph_from_triplets(num_nodes, num_rels, triplets):
     """ Create a DGL graph. The graph is bidirectional because RGCN authors

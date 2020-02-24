@@ -43,9 +43,10 @@ class PanRepRGCNHetero(nn.Module):
     def __init__(self, g,
                  h_dim,  out_dim,
                  num_bases,
+                 masked_node_types=[],
                  num_hidden_layers=1,
                  reconstruct_dim=1,
-                 dropout=0,
+                 dropout=0,loss_over_all_nodes=False,
                  use_self_loop=False, use_reconstruction_loss=True, use_infomax_loss=True):
         super(PanRepRGCNHetero, self).__init__()
         self.h_dim = h_dim
@@ -57,6 +58,7 @@ class PanRepRGCNHetero(nn.Module):
         self.num_bases=num_bases
         self.use_reconstruction_loss=use_reconstruction_loss
         self.use_infomax_loss=use_infomax_loss
+        self.loss_over_all_nodes=loss_over_all_nodes
         self.use_self_loop = use_self_loop
         self.G=g
         self.infomax=MutualInformationDiscriminator(n_hidden=h_dim)
@@ -76,9 +78,14 @@ class PanRepRGCNHetero(nn.Module):
         for name in self.G.ntypes:
             self.out_size_dict[name] = self.G.nodes[name].data['features'].size(1);
         self.attributeDecoder = MultipleAttributeDecoder(
-            out_size_dict=self.out_size_dict, in_size=self.h_dim, h_dim=h_dim, G=self.G)
+            out_size_dict=self.out_size_dict, in_size=self.h_dim, h_dim=h_dim, G=self.G,masked_node_types=masked_node_types,
+        loss_over_all_nodes=loss_over_all_nodes)
+    def updated_graph(self,g):
+        self.G=g
+        self.encoder.G=g
+        self.attributeDecoder.G=g
 
-    def forward(self):
+    def forward(self,masked_nodes):
 
         #h=self.encoder(corrupt=False)
         positive = self.encoder(corrupt=False)
@@ -88,7 +95,7 @@ class PanRepRGCNHetero(nn.Module):
             infomax_loss = self.infomax(positive, negative)
             loss += infomax_loss
         if self.use_reconstruction_loss:
-            reconstruct_loss = self.attributeDecoder(positive)
+            reconstruct_loss = self.attributeDecoder(positive,masked_nodes=masked_nodes)
             loss += reconstruct_loss
 
         return loss, positive

@@ -197,6 +197,7 @@ class EncoderRelGraphConvHetero(nn.Module):
         self.num_bases = None if num_bases < 0 else num_bases
         self.num_hidden_layers = num_hidden_layers
         self.dropout = dropout
+
         self.use_self_loop = use_self_loop
         self.in_size_dict = {};
         for name in self.G.ntypes:
@@ -225,6 +226,7 @@ class EncoderRelGraphConvHetero(nn.Module):
 
         else:
             g=self.G
+
         h = self.embed_layer(g)
         for layer in self.layers:
             h = layer(g, h)
