@@ -3,7 +3,7 @@ from dgl.nn.pytorch import RelGraphConv
 from functools import partial
 import torch
 import torch.nn as nn
-from encoders import  RelGraphConvHetero,EmbeddingLayer
+from layers import RelGraphConvHetero, EmbeddingLayer
 import torch.nn.functional as F
 
 
