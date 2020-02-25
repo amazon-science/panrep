@@ -42,33 +42,23 @@ class PanRepRGCN(nn.Module):
 class PanRepRGCNHetero(nn.Module):
     def __init__(self, g,
                  h_dim,  out_dim,
-                 num_bases,
+                 encoder,
                  masked_node_types=[],
                  num_hidden_layers=1,
-                 reconstruct_dim=1,
-                 dropout=0,loss_over_all_nodes=False,
-                 use_self_loop=False, use_reconstruction_loss=True, use_infomax_loss=True):
+                 dropout=0,loss_over_all_nodes=False, use_reconstruction_loss=True, use_infomax_loss=True):
         super(PanRepRGCNHetero, self).__init__()
         self.h_dim = h_dim
         self.out_dim = out_dim
-        self.reconstruct_dim=reconstruct_dim
-        self.num_bases = None if num_bases < 0 else num_bases
         self.num_hidden_layers = num_hidden_layers
         self.dropout = dropout
-        self.num_bases=num_bases
         self.use_reconstruction_loss=use_reconstruction_loss
         self.use_infomax_loss=use_infomax_loss
         self.loss_over_all_nodes=loss_over_all_nodes
-        self.use_self_loop = use_self_loop
         self.G=g
         self.infomax=MutualInformationDiscriminator(n_hidden=h_dim)
         #self.use_cuda = use_cuda
-        self.encoder = EncoderRelGraphConvHetero(self.G,
-                 self.h_dim, self.out_dim,
-                 self.num_bases,
-                 self.num_hidden_layers,
-                 self.dropout,
-                 self.use_self_loop)
+        self.encoder = encoder
+
         # create rgcn layers
         # self.encoder.build_model()
         # G.nodes['transaction'].data['features']

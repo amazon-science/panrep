@@ -3,7 +3,7 @@ from dgl.nn.pytorch import RelGraphConv
 from functools import partial
 import torch
 import torch.nn as nn
-from encoders import  RelGraphConvHetero,HeteroRGCNLayerFirst
+from encoders import  RelGraphConvHetero,EmbeddingLayer
 import torch.nn.functional as F
 
 
@@ -74,7 +74,7 @@ class End2EndClassifierRGCN(nn.Module):
         self.in_size_dict = {}
         for name in self.G.ntypes:
             self.in_size_dict[name] = self.G.nodes[name].data['features'].size(1);
-        self.embed_layer = HeteroRGCNLayerFirst(self.in_size_dict, h_dim, G.ntypes)
+        self.embed_layer = EmbeddingLayer(self.in_size_dict, h_dim, G.ntypes)
         self.layers = nn.ModuleList()
         # h2h
         for i in range(self.num_hidden_layers):

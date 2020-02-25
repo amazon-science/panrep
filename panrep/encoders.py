@@ -6,7 +6,6 @@ import dgl.function as fn
 import torch.nn.functional as F
 import torch.nn as nn
 
-#TODO SEE DGI code architecture and inspire similar context. add the dgi losses
 
 class EncoderRGCN(BaseRGCN):
     def create_features(self):
@@ -165,9 +164,9 @@ class RelGraphConvHetero(nn.Module):
         return hs
 
 
-class HeteroRGCNLayerFirst(nn.Module):
+class EmbeddingLayer(nn.Module):
     def __init__(self, in_size_dict, out_size, ntypes):
-        super(HeteroRGCNLayerFirst, self).__init__()
+        super(EmbeddingLayer, self).__init__()
         # W_r for each node
         self.weight = nn.ModuleDict({
             name: nn.Linear(in_size_dict[name], out_size, bias=False) for name in ntypes
@@ -180,10 +179,155 @@ class HeteroRGCNLayerFirst(nn.Module):
         return hs
 
 
+class RelGraphAttentionHetero(nn.Module):
+    def __init__(self, in_feat, out_feat, etypes, bias=True, activation = None,
+                 self_loop = False, dropout = 0.0):
+        super(RelGraphAttentionHetero, self).__init__()
+        # W_r for each relation
+        self.attn_fc = nn.ModuleDict({etype: nn.Linear(2 * in_feat, 1, bias=False) for etype in etypes})
+        self.message_fc = {etype: self.message_func_etype(etype) for etype in etypes}
+        self.bias = bias
+        self.activation = activation
+        self.self_loop = self_loop
+
+        # bias
+        if self.bias:
+            self.h_bias = nn.Parameter(torch.Tensor(out_feat))
+            nn.init.zeros_(self.h_bias)
+
+        # weight for self loop
+        if self.self_loop:
+            self.loop_weight = nn.Parameter(torch.Tensor(in_feat, out_feat))
+            nn.init.xavier_uniform_(self.loop_weight,
+                                    gain=nn.init.calculate_gain('relu'))
+
+        self.dropout = nn.Dropout(dropout)
+
+    def message_func_etype(self, etype):
+        def message_func(edges):
+            e = torch.cat([edges.src['Wh_%s' % etype], edges.dst['h']], dim=1);
+            e = self.attn_fc[etype](e);
+            return {'m': edges.src['Wh_%s' % etype], 'e': e};
+
+        return message_func;
+
+    def edge_attention(self, edges):
+
+        z2 = torch.cat([edges.src['z'], edges.dst['z']], dim=1)
+        a = self.attn_fc(z2)
+        return {'e': F.leaky_relu(a)}
+
+    def message_func(self, edges):
+        # message UDF for equation (3) & (4)
+        return {'z': edges.src['z'], 'e': edges.data['e']}
+
+    def reduce_func(self, nodes):
+        # reduce UDF for equation (3) & (4)
+        # equation (3)
+        num_edges = nodes.mailbox['e'].size(1);
+        check_cuda=False
+        if next(self.parameters()).is_cuda:
+            check_cuda = True
+
+        device = torch.device("cuda:" + str(torch.cuda.current_device()) if check_cuda else "cpu")
+        mask = torch.empty(nodes.mailbox['e'].size(),  device=device,dtype=torch.uint8).random_(0, num_edges) >= 201
+        temp = torch.where(mask, torch.empty(nodes.mailbox['e'].size(),  device=device, dtype=torch.float).fill_(
+            float('-inf')), nodes.mailbox['e']);
+        alpha = F.softmax(temp, dim=1)
+        # equation (4)
+        x = torch.sum(alpha * nodes.mailbox['m'], dim=1)
+        return {'x': x}
+
+    def forward(self, g, xs):
+        g = g.local_var()
+        for i, ntype in enumerate(g.ntypes):
+            g.nodes[ntype].data['xs'] = xs[i]
+        # The input is a dictionary of node features for each type
+        funcs = {}
+        for srctype, etype, dsttype in g.canonical_etypes:
+            # Specify per-relation message passing functions: (message_func, reduce_func).
+            # Note that the results are saved to the same destination feature 'h', which
+            # hints the type wise reducer for aggregation.
+            g.nodes[srctype].data['Wh_%s' % etype] = g.nodes[srctype].data['xs'];
+            funcs[etype] = (self.message_fc[etype], self.reduce_func)
+        # Trigger message passing of multiple types.
+        # The first argument is the message passing functions for each relation.
+        # The second one is the type wise reducer, could be "sum", "max",
+        # "min", "mean", "stack"
+        g.multi_update_all(funcs, 'mean')
+
+        hs = [g.nodes[ntype].data['x'] for ntype in g.ntypes]
+
+
+        for i in range(len(hs)):
+            h = hs[i]
+            # apply bias and activation
+            if self.self_loop:
+                h = h + torch.matmul(xs[i], self.loop_weight)
+            if self.bias:
+                h = h + self.h_bias
+            if self.activation:
+                h = self.activation(h)
+            h = self.dropout(h)
+            hs[i] = h
+        #Update for feature use
+        for i, ntype in enumerate(g.ntypes):
+            g.nodes[ntype].data['h'] = hs[i]
+        return hs
+
+class EncoderRelGraphAttentionHetero(nn.Module):
+    def __init__(self,
+                 G,
+                 h_dim,
+                 num_hidden_layers=1,
+                 dropout=0,
+                 use_self_loop=False):
+        super(EncoderRelGraphAttentionHetero, self).__init__()
+        self.G = G
+        self.h_dim = h_dim
+        self.rel_names = list(set(G.etypes))
+        self.rel_names.sort()
+        self.num_hidden_layers = num_hidden_layers
+        self.dropout = dropout
+
+        self.use_self_loop = use_self_loop
+        self.in_size_dict = {};
+        for name in self.G.ntypes:
+            self.in_size_dict[name] = self.G.nodes[name].data['features'].size(1);
+
+        self.embed_layer = EmbeddingLayer(self.in_size_dict, h_dim, G.ntypes)
+        self.layers = nn.ModuleList()
+        # h2h
+        for i in range(self.num_hidden_layers):
+            self.layers.append(RelGraphAttentionHetero(
+                self.h_dim, self.h_dim, self.G.etypes, activation=F.relu, self_loop=self.use_self_loop,
+                dropout=self.dropout))
+
+    def forward(self, corrupt=False):
+        if corrupt:
+            # create local variable do not permute the original graph
+            g = self.G.local_var()
+            for key in self.in_size_dict:
+                # TODO possibly high complexity here??
+                # The following implements the permutation of features within each node class.
+                # for the negative sample in the information maximization step
+                perm = torch.randperm(g.nodes[key].data['features'].shape[0])
+                g.nodes[key].data['features'] = g.nodes[key].data['features'][perm]
+
+
+        else:
+            g = self.G
+
+        h = self.embed_layer(g)
+        for layer in self.layers:
+            h = layer(g, h)
+        return h
+
+
 class EncoderRelGraphConvHetero(nn.Module):
     def __init__(self,
                  G,
-                 h_dim, out_dim,
+                 h_dim,
                  num_bases=-1,
                  num_hidden_layers=1,
                  dropout=0,
@@ -191,7 +335,6 @@ class EncoderRelGraphConvHetero(nn.Module):
         super(EncoderRelGraphConvHetero, self).__init__()
         self.G = G
         self.h_dim = h_dim
-        self.out_dim = out_dim
         self.rel_names = list(set(G.etypes))
         self.rel_names.sort()
         self.num_bases = None if num_bases < 0 else num_bases
@@ -203,7 +346,7 @@ class EncoderRelGraphConvHetero(nn.Module):
         for name in self.G.ntypes:
             self.in_size_dict[name] = self.G.nodes[name].data['features'].size(1);
 
-        self.embed_layer = HeteroRGCNLayerFirst(self.in_size_dict, h_dim, G.ntypes)
+        self.embed_layer = EmbeddingLayer(self.in_size_dict, h_dim, G.ntypes)
         self.layers = nn.ModuleList()
         # h2h
         for i in range(self.num_hidden_layers):

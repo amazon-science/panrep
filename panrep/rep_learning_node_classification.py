@@ -7,7 +7,24 @@ Difference compared to tkipf/relation-gcn
 * l2norm applied to all weights
 * remove nodes that won't be touched
 """
-
+'''
+     g = dgl.heterograph({
+        ('a', 'ab', 'b'): [(0, 1), (1, 2)],
+        ('b', 'ba', 'a'): [(1, 2), (2, 3)]})
+    g.nodes['a'].data['x'] = torch.randn(4, 5)
+    g.nodes['b'].data['y'] = torch.randn(3, 4)
+    g2 = dgl.to_homo(g)
+    etype_id = g.get_etype_id('ab')
+    eids_of_etype = g2.filter_edges(lambda edges: edges.data[dgl.ETYPE] == etype_id)
+    sg = g2.edge_subgraph({('_N', '_E', 'N'): eids_of_etype}, preserve_nodes=True)
+    ng=g
+    del ng.nodes['transaction'].data['features']
+    del ng.nodes['history'].data['features']
+    g2 = dgl.to_homo(ng)
+    etype_id = g.get_etype_id('transaction_to_customer')
+    eids_of_etype = g2.filter_edges(lambda edges: edges.data[dgl.ETYPE] == etype_id)
+    sg = g2.edge_subgraph({('_N','_E','N'): eids_of_etype}, preserve_nodes=True)
+    '''
 import argparse
 import numpy as np
 import time
@@ -21,6 +38,7 @@ from model import PanRepRGCN,PanRepRGCNHetero
 from sklearn.metrics import roc_auc_score
 from node_supervision_tasks import reconstruction_loss
 import utils
+from encoders import EncoderRelGraphConvHetero,EncoderRelGraphAttentionHetero
 
 def main(args):
     rgcn_hetero(args)
@@ -50,28 +68,41 @@ def rgcn_hetero(args):
         # create model
     #dgl.contrib.sampling.sampler.EdgeSampler(g['customer_to_transaction'], batch_size=100)
     use_reconstruction_loss=True
-    use_infomax_loss=True
+    use_infomax_loss=False
     num_masked_nodes = args.n_masked_nodes
-    node_masking= True
-    loss_over_all_nodes=True
+    node_masking= False
+    loss_over_all_nodes=False
     #g.adjacency_matrix(transpose=True,scipy_fmt='coo',etype='customer_to_transaction')
+    if args.encoder=='RGCN':
+        encoder=EncoderRelGraphConvHetero(g,
+                                  args.n_hidden,
+                                  num_bases=args.n_bases,
+                                  num_hidden_layers=args.n_layers - 2,
+                                  dropout=args.dropout,
+                                  use_self_loop=args.use_self_loop)
+    elif args.encoder=='RGAT':
+        encoder = EncoderRelGraphAttentionHetero(g,
+                                            args.n_hidden,
+                                            num_hidden_layers=args.n_layers - 2,
+                                            dropout=args.dropout,
+                                            use_self_loop=args.use_self_loop)
+
     model = PanRepRGCNHetero(g,
                            args.n_hidden,
                            num_classes,
-                           num_bases=args.n_bases,
+                             encoder=encoder,
                            num_hidden_layers=args.n_layers - 2,
                            dropout=args.dropout,
-                           use_self_loop=args.use_self_loop,
                             masked_node_types=masked_node_types,
                            loss_over_all_nodes=loss_over_all_nodes,
                            use_infomax_loss=use_infomax_loss,
-
                            use_reconstruction_loss=use_reconstruction_loss)
 
     if use_cuda:
         model.cuda()
 
     # optimizer
+
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2norm)
 
     # training loop
@@ -80,26 +111,7 @@ def rgcn_hetero(args):
     backward_time = []
     model.train()
     for epoch in range(args.n_epochs):
-        '''
-        # perform edge neighborhood sampling to generate training graph and data
-        g, node_id, edge_type, node_norm, data, labels = \
-            utils.generate_sampled_graph_and_labels(
-                train_data, args.graph_batch_size, args.graph_split_size,
-                num_rels, adj_list, degrees, args.negative_sample,
-                args.edge_sampler)
-        print("Done edge sampling")
 
-        # set node/edge feature
-        node_id = torch.from_numpy(node_id).view(-1, 1).long()
-        edge_type = torch.from_numpy(edge_type)
-        edge_norm = node_norm_to_edge_norm(g, torch.from_numpy(node_norm).view(-1, 1))
-        data, labels = torch.from_numpy(data), torch.from_numpy(labels)
-        deg = g.in_degrees(range(g.number_of_nodes())).float().view(-1, 1)
-        if use_cuda:
-            node_id, deg = node_id.cuda(), deg.cuda()
-            edge_type, edge_norm = edge_type.cuda(), edge_norm.cuda()
-            data, labels = data.cuda(), labels.cuda()
-        '''
         if node_masking:
 
             masked_nodes,new_g =utils.masked_nodes(g,num_nodes=num_masked_nodes,masked_node_types=masked_node_types)
@@ -324,7 +336,7 @@ def rgcn(args):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='RGCN')
+    parser = argparse.ArgumentParser(description='PanRep')
     parser.add_argument("--dropout", type=float, default=0.3,
             help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=40,
@@ -337,12 +349,14 @@ if __name__ == '__main__':
             help="number of filter weight matrices, default: -1 [use all]")
     parser.add_argument("--n-layers", type=int, default=4,
             help="number of propagation rounds")
-    parser.add_argument("-e", "--n-epochs", type=int, default=200,
+    parser.add_argument("-e", "--n-epochs", type=int, default=100,
             help="number of training epochs")
-    parser.add_argument("-num_masked", "--n-masked-nodes", type=int, default=100,
+    parser.add_argument("-num_masked", "--n-masked-nodes", type=int, default=200,
                         help="number of masked nodes")
     parser.add_argument("-d", "--dataset", type=str, required=True,
             help="dataset to use")
+    parser.add_argument("-en", "--encoder", type=str, required=True,
+                        help="Encoder to use")
     parser.add_argument("--l2norm", type=float, default=0,
             help="l2 norm coef")
     parser.add_argument("--relabel", default=False, action='store_true',
@@ -354,7 +368,28 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'database_data'])
+    args = parser.parse_args(['--dataset', 'database_data','--encoder', 'RGAT'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     main(args)
+
+    '''
+    # perform edge neighborhood sampling to generate training graph and data
+    g, node_id, edge_type, node_norm, data, labels = \
+        utils.generate_sampled_graph_and_labels(
+            train_data, args.graph_batch_size, args.graph_split_size,
+            num_rels, adj_list, degrees, args.negative_sample,
+            args.edge_sampler)
+    print("Done edge sampling")
+
+    # set node/edge feature
+    node_id = torch.from_numpy(node_id).view(-1, 1).long()
+    edge_type = torch.from_numpy(edge_type)
+    edge_norm = node_norm_to_edge_norm(g, torch.from_numpy(node_norm).view(-1, 1))
+    data, labels = torch.from_numpy(data), torch.from_numpy(labels)
+    deg = g.in_degrees(range(g.number_of_nodes())).float().view(-1, 1)
+    if use_cuda:
+        node_id, deg = node_id.cuda(), deg.cuda()
+        edge_type, edge_norm = edge_type.cuda(), edge_norm.cuda()
+        data, labels = data.cuda(), labels.cuda()
+    '''
