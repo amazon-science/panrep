@@ -125,8 +125,9 @@ def comp_deg_norm(g):
     norm = 1.0 / in_deg
     norm[np.isinf(norm)] = 0
     return norm
-def masked_nodes(g,num_nodes,masked_node_types):
+def masked_nodes(old_g,num_nodes,masked_node_types):
     masked_nodes={}
+    g=old_g.local_var()
     for ntype in g.ntypes:
         mnnodes=num_nodes
         if ntype not in masked_node_types:

@@ -68,10 +68,10 @@ def rgcn_hetero(args):
         # create model
     #dgl.contrib.sampling.sampler.EdgeSampler(g['customer_to_transaction'], batch_size=100)
     use_reconstruction_loss=True
-    use_infomax_loss=False
+    use_infomax_loss=True
     num_masked_nodes = args.n_masked_nodes
-    node_masking= False
-    loss_over_all_nodes=False
+    node_masking= True
+    loss_over_all_nodes=True
     #g.adjacency_matrix(transpose=True,scipy_fmt='coo',etype='customer_to_transaction')
     if args.encoder=='RGCN':
         encoder=EncoderRelGraphConvHetero(g,
@@ -167,7 +167,7 @@ def rgcn_hetero(args):
     best_val_acc = 0
     best_test_acc = 0
 
-    for epoch in range(args.n_epochs):
+    for epoch in range(args.n_cepochs):
         optimizer.zero_grad()
         logits = model(feats)
         loss = F.binary_cross_entropy_with_logits(logits[train_idx].squeeze(1), labels[train_idx].type(torch.FloatTensor).to(device))
@@ -339,7 +339,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PanRep')
     parser.add_argument("--dropout", type=float, default=0.3,
             help="dropout probability")
-    parser.add_argument("--n-hidden", type=int, default=40,
+    parser.add_argument("--n-hidden", type=int, default=50,
             help="number of hidden units") # use 16, 2 for debug
     parser.add_argument("--gpu", type=int, default=0,
             help="gpu")
@@ -350,8 +350,10 @@ if __name__ == '__main__':
     parser.add_argument("--n-layers", type=int, default=4,
             help="number of propagation rounds")
     parser.add_argument("-e", "--n-epochs", type=int, default=100,
-            help="number of training epochs")
-    parser.add_argument("-num_masked", "--n-masked-nodes", type=int, default=200,
+            help="number of training epochs for decoder")
+    parser.add_argument("-ec", "--n-cepochs", type=int, default=1000,
+                        help="number of training epochs for classification")
+    parser.add_argument("-num_masked", "--n-masked-nodes", type=int, default=20,
                         help="number of masked nodes")
     parser.add_argument("-d", "--dataset", type=str, required=True,
             help="dataset to use")
@@ -368,7 +370,7 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'database_data','--encoder', 'RGAT'])
+    args = parser.parse_args(['--dataset', 'database_data','--encoder', 'RGCN'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     main(args)

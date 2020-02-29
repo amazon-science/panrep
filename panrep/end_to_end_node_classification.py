@@ -20,7 +20,7 @@ from load_data import load_db_data, load_gen_data
 from model import PanRepRGCN,PanRepRGCNHetero
 from sklearn.metrics import roc_auc_score
 from node_supervision_tasks import reconstruction_loss
-import utils
+import os
 
 def main(args):
     rgcn_hetero(args)
