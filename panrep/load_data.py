@@ -29,7 +29,7 @@ def load_db_data(args):
 
     # In[12]:
 
-    data_folder = "../data/"
+    data_folder = "../data/kaggle_shoppers/"
 
     # In[13]:
 
