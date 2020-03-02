@@ -111,10 +111,12 @@ class RelGraphConvHetero(nn.Module):
         ws = self.basis_weight()
         funcs = {}
         for i, (srctype, etype, dsttype) in enumerate(g.canonical_etypes):
-            g.nodes[srctype].data['h%d' % i] = torch.matmul(
-                g.nodes[srctype].data['x'], ws[etype])
+            # TODO check that the masking step works
+            g.nodes[srctype].data['h%d' % i] = torch.matmul(torch.matmul(
+                g.nodes[srctype].data['x'], ws[etype]), g.edges[etype].data['mask'])
             funcs[(srctype, etype, dsttype)] = (fn.copy_u('h%d' % i, 'm'), fn.mean('m', 'h'))
         # message passing
+        #  sum for the link prediction to not consider the zero messages
         g.multi_update_all(funcs, 'sum')
 
         hs = [g.nodes[ntype].data['h'] for ntype in g.ntypes]
@@ -222,7 +224,8 @@ class RelGraphAttentionHetero(nn.Module):
         # The first argument is the message passing functions for each relation.
         # The second one is the type wise reducer, could be "sum", "max",
         # "min", "mean", "stack"
-        g.multi_update_all(funcs, 'mean')
+        # TODO sum for the link prediction to not consider the zero messages
+        g.multi_update_all(funcs, 'sum')
 
         hs = [g.nodes[ntype].data['x'] for ntype in g.ntypes]
 

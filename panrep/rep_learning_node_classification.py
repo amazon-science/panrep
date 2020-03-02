@@ -7,24 +7,8 @@ Difference compared to tkipf/relation-gcn
 * l2norm applied to all weights
 * remove nodes that won't be touched
 """
-'''
-     g = dgl.heterograph({
-        ('a', 'ab', 'b'): [(0, 1), (1, 2)],
-        ('b', 'ba', 'a'): [(1, 2), (2, 3)]})
-    g.nodes['a'].data['x'] = torch.randn(4, 5)
-    g.nodes['b'].data['y'] = torch.randn(3, 4)
-    g2 = dgl.to_homo(g)
-    etype_id = g.get_etype_id('ab')
-    eids_of_etype = g2.filter_edges(lambda edges: edges.data[dgl.ETYPE] == etype_id)
-    sg = g2.edge_subgraph({('_N', '_E', 'N'): eids_of_etype}, preserve_nodes=True)
-    ng=g
-    del ng.nodes['transaction'].data['features']
-    del ng.nodes['history'].data['features']
-    g2 = dgl.to_homo(ng)
-    etype_id = g.get_etype_id('transaction_to_customer')
-    eids_of_etype = g2.filter_edges(lambda edges: edges.data[dgl.ETYPE] == etype_id)
-    sg = g2.edge_subgraph({('_N','_E','N'): eids_of_etype}, preserve_nodes=True)
-    '''
+from node_masking import  node_masker
+
 import argparse
 import numpy as np
 import time
@@ -37,7 +21,7 @@ from load_data import load_db_data, load_gen_data
 from model import PanRepRGCN,PanRepRGCNHetero
 from sklearn.metrics import roc_auc_score
 from node_supervision_tasks import reconstruction_loss
-import utils
+from edge_samling import edge_sampler,create_edge_mask
 from encoders import EncoderRelGraphConvHetero,EncoderRelGraphAttentionHetero
 
 def main(args):
@@ -71,8 +55,18 @@ def rgcn_hetero(args):
     use_infomax_loss=True
     num_masked_nodes = args.n_masked_nodes
     node_masking= True
+    link_prediction = True
     loss_over_all_nodes=True
+    num_sampled_edges= 100
+    negative_rate=4
     #g.adjacency_matrix(transpose=True,scipy_fmt='coo',etype='customer_to_transaction')
+
+    if link_prediction:
+        ng=create_edge_mask(g)
+        og=g
+        g=ng
+
+
     if args.encoder=='RGCN':
         encoder=EncoderRelGraphConvHetero(g,
                                   args.n_hidden,
@@ -110,22 +104,32 @@ def rgcn_hetero(args):
     forward_time = []
     backward_time = []
     model.train()
+    new_g = g
     for epoch in range(args.n_epochs):
 
         if node_masking:
-
-            masked_nodes,new_g =utils.masked_nodes(g,num_nodes=num_masked_nodes,masked_node_types=masked_node_types)
+            masked_nodes,new_g = node_masker(g, num_nodes=num_masked_nodes, masked_node_types=masked_node_types)
             model.updated_graph(new_g)
         else:
+            new_g = g
             masked_nodes={}
+        if link_prediction:
+            new_g,pos_samples,neg_samples=edge_sampler(new_g, num_sampled_edges, negative_rate)
+            model.updated_graph(new_g)
+        else:
+            # TODO check that the new_g deletes old masked edges, nodes.
+            pos_samples=[]
+            neg_samples=[]
+
         optimizer.zero_grad()
         t0 = time.time()
         loss, embeddings = model(masked_nodes=masked_nodes)
         t1 = time.time()
         loss.backward()
         optimizer.step()
-        if node_masking:
+        if node_masking or link_prediction:
             model.updated_graph(g)
+            new_g=g
         t2 = time.time()
 
         forward_time.append(t1 - t0)
