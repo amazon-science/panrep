@@ -61,7 +61,7 @@ class PanRepRGCNHetero(nn.Module):
         self.infomax=MutualInformationDiscriminator(n_hidden=h_dim)
         self.use_cuda = use_cuda
         self.encoder = encoder
-        self.linkPredictor = LinkPredictor(out_dim=h_dim,etypes=self.G.etypes,G=self.G)
+        self.linkPredictor = LinkPredictor(out_dim=h_dim,etypes=self.G.etypes,G=self.G,use_cuda=use_cuda)
         # create rgcn layers
         # self.encoder.build_model()
         # G.nodes['transaction'].data['features']

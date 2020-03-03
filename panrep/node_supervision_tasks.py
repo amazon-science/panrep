@@ -44,10 +44,14 @@ class LinkPredictor(nn.Module):
         score = self.calc_score(embed, edict_s_d)
         predict_loss=0
         for etype in self.etypes:
-            predict_loss = F.binary_cross_entropy_with_logits(score[etype], e_dict_labels[etype])
-        reg_loss = self.regularization_loss(embed)
-        return predict_loss + self.reg_param * reg_loss
+            predict_loss += F.binary_cross_entropy_with_logits(score[etype], e_dict_labels[etype])
 
+        # TODO implement regularization
+
+        # reg_loss = self.regularization_loss(embed)
+
+        # return predict_loss + self.reg_param * reg_loss
+        return predict_loss
 class AttributeDecoder(nn.Module):
     def __init__(self, h_dim, reconstruct_dim=1, use_cuda=False):
         super(AttributeDecoder, self).__init__()

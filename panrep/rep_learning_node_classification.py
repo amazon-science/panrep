@@ -120,6 +120,13 @@ def rgcn_hetero(args):
         if link_prediction:
             g,samples_d,labels_d=hetero_edge_masker_sampler(new_g, num_sampled_edges, negative_rate, mask_links)
             model.updated_graph(new_g)
+
+            n_labels_d={}
+            for e in labels_d.keys():
+                n_labels_d[e]=torch.from_numpy(labels_d[e])
+                if use_cuda:
+                    n_labels_d[e]=n_labels_d[e].cuda()
+            labels_d=n_labels_d
         else:
             # TODO check that the new_g deletes old masked edges, nodes.
             samples_d = {}
