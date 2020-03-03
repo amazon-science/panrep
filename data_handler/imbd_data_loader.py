@@ -1,4 +1,3 @@
-import pandas as pd
 import os
 from urllib import request
 import subprocess
@@ -16,8 +15,9 @@ from scipy.sparse import csr_matrix
 import numpy as np
 import time
 
-
+# nohup python imbd_data_loader.py > myprogram.out 2> myprogram.err &
 csv.field_size_limit(sys.maxsize)
+nbr_processes = 180
 def embed_genre_dic(embed_dict, id2class_dic):
     mlb = MultiLabelBinarizer(classes=list(embed_dict.values()), sparse_output=True)
     def embed_genre(embed_dict, classes_str, mlb):
@@ -40,7 +40,7 @@ def embed_word2vec(title, nlps):
             vector=doc.vector
         else:
             vector=np.concatenate((vector, doc.vector))
-    return csr_matrix(vector)
+    return vector
 IMDB_DIR= '../data/imdb_data/'
 def _download_imdb(flag_overwrite=False):
     if os.path.isdir(IMDB_DIR) is False:
@@ -307,7 +307,7 @@ def parallel_dict_nlp_processing(dictionary_to_transform, nlps):
 
 
         manager = Manager()
-        nbr_processes = 16
+
         d = manager.dict()
         keys, values = zip(*dictionary_to_transform.items())
         len_per_split = len(keys) // nbr_processes
@@ -320,13 +320,12 @@ def parallel_dict_nlp_processing(dictionary_to_transform, nlps):
         return d
 
 
-def read_subset_imdb2dic(nlp_model='small', IMDB_DIR='../data/imdb_data/'):
+def read_subset_imdb2dic(nlp_model='en_fr_lang', IMDB_DIR='../data/imdb_data/'):
     #_download_imdb()
     id2numer_info_dic = {}
     id2str_info_dic = {}
     id2genre_dic = {}
     # TODO load first to dictionary and then process in parallel for the nlp model ...
-    nlp_model='en_fr_lang'
     nlps_title, nlps_characters, nlps_primary_profession = load_nlp_models(nlp_model)
 
     with open(os.path.join(IMDB_DIR, "title.basics.tsv"), newline='', encoding='utf-8') as csvfile:
@@ -378,7 +377,7 @@ def read_subset_imdb2dic(nlp_model='small', IMDB_DIR='../data/imdb_data/'):
     e = time.time()
     print('Parallel processing runtime')
     print(e - s)
-    print(len(id2str_info_dic.values()))
+    #print(len(id2str_info_dic.values()))
     #print(id2str_info_dic.keys())
 
 

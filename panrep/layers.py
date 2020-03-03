@@ -112,9 +112,11 @@ class RelGraphConvHetero(nn.Module):
         funcs = {}
         for i, (srctype, etype, dsttype) in enumerate(g.canonical_etypes):
             # TODO check that the masking step works
-            g.nodes[srctype].data['h%d' % i] = torch.matmul(torch.matmul(
-                g.nodes[srctype].data['x'], ws[etype]), g.edges[etype].data['mask'])
-            funcs[(srctype, etype, dsttype)] = (fn.copy_u('h%d' % i, 'm'), fn.mean('m', 'h'))
+            g.nodes[srctype].data['h%d' % i] = torch.matmul(
+                g.nodes[srctype].data['x'], ws[etype])# g.edges[etype].data['mask'])
+            funcs[(srctype, etype, dsttype)] = (fn.u_mul_e('h%d' % i, 'mask', 'm'), fn.mean('m', 'h'))
+            # TODO check the masked 1 with without mask that returns the same
+            #funcs[(srctype, etype, dsttype)] = (fn.copy_u('h%d' % i, 'm'), fn.mean('m', 'h'))
         # message passing
         #  sum for the link prediction to not consider the zero messages
         g.multi_update_all(funcs, 'sum')

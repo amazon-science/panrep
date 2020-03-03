@@ -21,7 +21,7 @@ from load_data import load_db_data, load_gen_data
 from model import PanRepRGCN,PanRepRGCNHetero
 from sklearn.metrics import roc_auc_score
 from node_supervision_tasks import reconstruction_loss
-from edge_samling import edge_sampler,create_edge_mask
+from edge_samling import hetero_edge_masker_sampler,create_edge_mask
 from encoders import EncoderRelGraphConvHetero,EncoderRelGraphAttentionHetero
 
 def main(args):
@@ -51,18 +51,20 @@ def rgcn_hetero(args):
     device = torch.device("cuda:" + str(args.gpu) if use_cuda else "cpu")
         # create model
     #dgl.contrib.sampling.sampler.EdgeSampler(g['customer_to_transaction'], batch_size=100)
-    use_reconstruction_loss=True
-    use_infomax_loss=True
+    use_reconstruction_loss=False
+    use_infomax_loss=False
     num_masked_nodes = args.n_masked_nodes
     node_masking= True
     link_prediction = True
+    mask_links=True
     loss_over_all_nodes=True
     num_sampled_edges= 100
     negative_rate=4
     #g.adjacency_matrix(transpose=True,scipy_fmt='coo',etype='customer_to_transaction')
 
     if link_prediction:
-        ng=create_edge_mask(g)
+        ng=create_edge_mask(g,use_cuda)
+        # keep a reference to previous graph?
         og=g
         g=ng
 
@@ -82,15 +84,17 @@ def rgcn_hetero(args):
                                             use_self_loop=args.use_self_loop)
 
     model = PanRepRGCNHetero(g,
-                           args.n_hidden,
-                           num_classes,
+                             args.n_hidden,
+                             num_classes,
                              encoder=encoder,
-                           num_hidden_layers=args.n_layers - 2,
-                           dropout=args.dropout,
-                            masked_node_types=masked_node_types,
-                           loss_over_all_nodes=loss_over_all_nodes,
-                           use_infomax_loss=use_infomax_loss,
-                           use_reconstruction_loss=use_reconstruction_loss)
+                             num_hidden_layers=args.n_layers - 2,
+                             dropout=args.dropout,
+                             masked_node_types=masked_node_types,
+                             loss_over_all_nodes=loss_over_all_nodes,
+                             use_infomax_task=use_infomax_loss,
+                             use_reconstruction_task=use_reconstruction_loss,
+                             link_prediction_task=link_prediction,
+                             use_cuda=use_cuda)
 
     if use_cuda:
         model.cuda()
@@ -114,16 +118,16 @@ def rgcn_hetero(args):
             new_g = g
             masked_nodes={}
         if link_prediction:
-            new_g,pos_samples,neg_samples=edge_sampler(new_g, num_sampled_edges, negative_rate)
+            g,samples_d,labels_d=hetero_edge_masker_sampler(new_g, num_sampled_edges, negative_rate, mask_links)
             model.updated_graph(new_g)
         else:
             # TODO check that the new_g deletes old masked edges, nodes.
-            pos_samples=[]
-            neg_samples=[]
+            samples_d = {}
+            labels_d = {}
 
         optimizer.zero_grad()
         t0 = time.time()
-        loss, embeddings = model(masked_nodes=masked_nodes)
+        loss, embeddings = model(masked_nodes=masked_nodes,sampled_links=samples_d,sampled_link_labels=labels_d)
         t1 = time.time()
         loss.backward()
         optimizer.step()

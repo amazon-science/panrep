@@ -3,33 +3,48 @@ import torch.nn as nn
 import torch
 import math
 
-def graph_link_prediction():
-    return
 
 class LinkPredictor(nn.Module):
-    def __init__(self, out_dim, num_rels, reg_param=0):
+    def __init__(self, out_dim, etypes, G, reg_param=0,use_cuda=False):
         super(LinkPredictor, self).__init__()
         self.reg_param = reg_param
-        self.w_relation = nn.Parameter(torch.Tensor(num_rels, out_dim))
-        nn.init.xavier_uniform_(self.w_relation,
-                                gain=nn.init.calculate_gain('relu'))
+        self.etypes=etypes
+        self.G=G
+        self.w_relation={}
+        self.ntype2id={}
+        for i, ntype in enumerate(self.G.ntypes):
+            self.ntype2id[ntype] = i
+        for ename in self.etypes:
+            if use_cuda:
+                self.w_relation[ename] = nn.Parameter(torch.Tensor(out_dim)).cuda()
+            else:
+                self.w_relation[ename] = nn.Parameter(torch.Tensor(out_dim))
+            # TODO skipped initialization
+            # nn.init.xavier_uniform_(self.w_relation[ename],
+            #                    gain=nn.init.calculate_gain('relu'))
 
-    def calc_score(self, embedding, triplets):
+
+    def calc_score(self, embedding, dict_s_d):
         # DistMult
-        s = embedding[triplets[:, 0]]
-        r = self.w_relation[triplets[:, 1]]
-        o = embedding[triplets[:, 2]]
-        score = torch.sum(s * r * o, dim=1)
+        score={}
+        for etype in self.etypes:
+            (stype,e,dtype)=self.G.to_canonical_etype(etype)
+            s = embedding[self.ntype2id[stype]][dict_s_d[etype][:, 0]]
+            r = self.w_relation[etype]
+            o = embedding[self.ntype2id[dtype]][dict_s_d[etype][:, 1]]
+            score[etype] = torch.sum(s * r * o, dim=1)
         return score
 
     def regularization_loss(self, embedding):
         return torch.mean(embedding.pow(2)) + torch.mean(self.w_relation.pow(2))
 
-    def get_loss(self,  embed, triplets, labels):
+    def forward(self, embed, edict_s_d, e_dict_labels):
         # triplets is a list of data samples (positive and negative)
         # each row in the triplets is a 3-tuple of (source, relation, destination)
-        score = self.calc_score(embed, triplets)
-        predict_loss = F.binary_cross_entropy_with_logits(score, labels)
+        score = self.calc_score(embed, edict_s_d)
+        predict_loss=0
+        for etype in self.etypes:
+            predict_loss = F.binary_cross_entropy_with_logits(score[etype], e_dict_labels[etype])
         reg_loss = self.regularization_loss(embed)
         return predict_loss + self.reg_param * reg_loss
 
