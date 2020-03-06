@@ -16,12 +16,11 @@ class LinkPredictor(nn.Module):
             self.ntype2id[ntype] = i
         for ename in self.etypes:
             if use_cuda:
-                self.w_relation[ename] = nn.Parameter(torch.Tensor(out_dim)).cuda()
+                self.w_relation[ename] = nn.Parameter(torch.Tensor(out_dim,1)).cuda()
             else:
-                self.w_relation[ename] = nn.Parameter(torch.Tensor(out_dim))
-            # TODO skipped initialization
-            # nn.init.xavier_uniform_(self.w_relation[ename],
-            #                    gain=nn.init.calculate_gain('relu'))
+                self.w_relation[ename] = nn.Parameter(torch.Tensor(out_dim,1))
+            nn.init.xavier_uniform_(self.w_relation[ename],
+                                gain=nn.init.calculate_gain('relu'))
 
 
     def calc_score(self, embedding, dict_s_d):
@@ -30,14 +29,19 @@ class LinkPredictor(nn.Module):
         for etype in self.etypes:
             (stype,e,dtype)=self.G.to_canonical_etype(etype)
             s = embedding[self.ntype2id[stype]][dict_s_d[etype][:, 0]]
-            r = self.w_relation[etype]
+            r = self.w_relation[etype].squeeze()
             o = embedding[self.ntype2id[dtype]][dict_s_d[etype][:, 1]]
             score[etype] = torch.sum(s * r * o, dim=1)
         return score
 
     def regularization_loss(self, embedding):
-        return torch.mean(embedding.pow(2)) + torch.mean(self.w_relation.pow(2))
+            loss=0
+            for e in embedding:
+                loss+=torch.mean(e.pow(2))
 
+            for e in self.w_relation.keys():
+                loss+=torch.mean(self.w_relation[e].pow(2))
+            return loss
     def forward(self, embed, edict_s_d, e_dict_labels):
         # triplets is a list of data samples (positive and negative)
         # each row in the triplets is a 3-tuple of (source, relation, destination)
@@ -48,10 +52,9 @@ class LinkPredictor(nn.Module):
 
         # TODO implement regularization
 
-        # reg_loss = self.regularization_loss(embed)
+        reg_loss = self.regularization_loss(embed)
 
-        # return predict_loss + self.reg_param * reg_loss
-        return predict_loss
+        return predict_loss + self.reg_param * reg_loss
 class AttributeDecoder(nn.Module):
     def __init__(self, h_dim, reconstruct_dim=1, use_cuda=False):
         super(AttributeDecoder, self).__init__()

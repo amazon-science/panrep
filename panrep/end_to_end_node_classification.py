@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from dgl import DGLGraph
 import dgl
 from classifiers import ClassifierRGCN,End2EndClassifierRGCN
-from load_data import load_db_data, load_gen_data
+from load_data import load_kaggle_shoppers_data, load_gen_data
 from model import PanRepRGCN,PanRepRGCNHetero
 from sklearn.metrics import roc_auc_score
 from node_supervision_tasks import reconstruction_loss
@@ -27,7 +27,7 @@ def main(args):
 
 def rgcn_hetero(args):
     if args.dataset == "database_data":
-        train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_db_data(args)
+        train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_kaggle_shoppers_data(args)
     else:
         raise NotImplementedError
 

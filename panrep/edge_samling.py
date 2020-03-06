@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-
+import time
 def create_edge_mask(old_g,use_cude):
     g=old_g.local_var()
     for etype in g.etypes:
@@ -53,7 +53,9 @@ def hetero_edge_masker_sampler(old_g, num_sampled_edges, negative_rate,edge_mask
     g = old_g.local_var()
     for etype in g.etypes:
         pos_samples[etype]=[]
+        t0=time.time()
         u,v,eid=g.all_edges(form='all', etype=etype)
+        tedgefetch=time.time()-t0
         if len(eid)//3 <= num_sampled_edges:
             lnum_sampled_edges = len(eid)//3
         else:
@@ -61,14 +63,17 @@ def hetero_edge_masker_sampler(old_g, num_sampled_edges, negative_rate,edge_mask
         sampl_ids=np.random.choice(g.number_of_edges(etype),size=lnum_sampled_edges,replace=False)
         pos_samples[etype]=np.stack((u[sampl_ids],v[sampl_ids]))
         sampled_edges=eid[sampl_ids]
-        num_entity_s[etype]=max(u)
-        num_entity_o[etype]=max(v)
+        (s,e,o)=g.to_canonical_etype(etype)
+        num_entity_s[etype]=g.number_of_nodes(s)
+        num_entity_o[etype]=g.number_of_nodes(o)
+
         # mask edges
         if edge_masking:
             g.edges[etype].data['mask'][sampled_edges] = 0
     # TODO negative samples
+    t0 = time.time()
     samples_d,labels_d=negative_sampling(pos_samples, num_entity_s, num_entity_o, negative_rate)
-
+    tnega = time.time() - t0
 
     # create function consuming pos
     return g,samples_d,labels_d

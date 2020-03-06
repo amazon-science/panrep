@@ -17,7 +17,7 @@ import torch.nn.functional as F
 from dgl import DGLGraph
 import dgl
 from classifiers import ClassifierRGCN,ClassifierMLP
-from load_data import load_db_data, load_gen_data
+from load_data import load_kaggle_shoppers_data, load_gen_data,load_imdb_data
 from model import PanRepRGCN,PanRepRGCNHetero
 from sklearn.metrics import roc_auc_score
 from node_supervision_tasks import reconstruction_loss
@@ -28,8 +28,10 @@ def main(args):
     rgcn_hetero(args)
 
 def rgcn_hetero(args):
-    if args.dataset == "database_data":
-        train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_db_data(args)
+    if args.dataset == "kaggle_shoppers":
+        train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_kaggle_shoppers_data(args)
+    elif args.dataset == "imdb":
+        train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_imdb_data(args)
     else:
         raise NotImplementedError
 
@@ -51,22 +53,18 @@ def rgcn_hetero(args):
     device = torch.device("cuda:" + str(args.gpu) if use_cuda else "cpu")
         # create model
     #dgl.contrib.sampling.sampler.EdgeSampler(g['customer_to_transaction'], batch_size=100)
-    use_reconstruction_loss=False
-    use_infomax_loss=False
+    use_reconstruction_loss = args.use_reconstruction_loss
+    use_infomax_loss = args.use_infomax_loss
     num_masked_nodes = args.n_masked_nodes
-    node_masking= True
-    link_prediction = True
-    mask_links=True
-    loss_over_all_nodes=True
-    num_sampled_edges= 100
-    negative_rate=4
+    node_masking = args.node_masking
+    link_prediction = args.link_prediction
+    mask_links = args.mask_links
+    loss_over_all_nodes = args.loss_over_all_nodes
+    num_sampled_edges = args.n_masked_links
+    negative_rate = args.negative_rate
     #g.adjacency_matrix(transpose=True,scipy_fmt='coo',etype='customer_to_transaction')
 
-    if link_prediction:
-        ng=create_edge_mask(g,use_cuda)
-        # keep a reference to previous graph?
-        og=g
-        g=ng
+
 
 
     if args.encoder=='RGCN':
@@ -106,19 +104,29 @@ def rgcn_hetero(args):
     # training loop
     print("start training...")
     forward_time = []
+    nm_time = []
+    lm_time = []
     backward_time = []
     model.train()
-    new_g = g
+    # This creates an all 1 mask for link prediction needed by the current implementation
+    ng=create_edge_mask(g,use_cuda)
+    # keep a reference to previous graph?
+    og=g
+    g=ng
+    model.updated_graph(g)
     for epoch in range(args.n_epochs):
-
-        if node_masking:
+        t_nm_0 = time.time()
+        if node_masking and use_reconstruction_loss:
             masked_nodes,new_g = node_masker(g, num_nodes=num_masked_nodes, masked_node_types=masked_node_types)
             model.updated_graph(new_g)
         else:
             new_g = g
             masked_nodes={}
+        t_nm_1 = time.time()
+        # TODO check that g is not the same as new_g...
+        t_lm_0 = time.time()
         if link_prediction:
-            g,samples_d,labels_d=hetero_edge_masker_sampler(new_g, num_sampled_edges, negative_rate, mask_links)
+            new_g,samples_d,labels_d=hetero_edge_masker_sampler(new_g, num_sampled_edges, negative_rate, mask_links)
             model.updated_graph(new_g)
 
             n_labels_d={}
@@ -131,6 +139,7 @@ def rgcn_hetero(args):
             # TODO check that the new_g deletes old masked edges, nodes.
             samples_d = {}
             labels_d = {}
+        t_lm_1 = time.time()
 
         optimizer.zero_grad()
         t0 = time.time()
@@ -145,8 +154,10 @@ def rgcn_hetero(args):
 
         forward_time.append(t1 - t0)
         backward_time.append(t2 - t1)
-        print("Epoch {:05d} | Train Forward Time(s) {:.4f} | Backward Time(s) {:.4f}".
-              format(epoch, forward_time[-1], backward_time[-1]))
+        lm_time.append(t_lm_1-t_lm_0)
+        nm_time.append(t_nm_1-t_nm_0)
+        print("Epoch {:05d} | Train Forward Time(s) {:.4f} | Backward Time(s) {:.4f} | Link masking Time(s) {:.4f} | Node masking Time(s) {:.4f}".
+              format(epoch, forward_time[-1], backward_time[-1],lm_time[-1],nm_time[-1]))
         print("Train Loss: {:.4f}".
               format(loss.item()))
 
@@ -158,6 +169,8 @@ def rgcn_hetero(args):
 
     print("Mean forward time: {:4f}".format(np.mean(forward_time[len(forward_time) // 4:])))
     print("Mean backward time: {:4f}".format(np.mean(backward_time[len(backward_time) // 4:])))
+    print("Mean link masking time: {:4f}".format(np.mean(lm_time[len(lm_time) // 4:])))
+    print("Mean node masking time: {:4f}".format(np.mean(nm_time[len(nm_time) // 4:])))
     ###
     # Use the encoded features for classification
     # Here we initialize the features using the reconstructed ones
@@ -210,153 +223,13 @@ def rgcn_hetero(args):
     print()
 
 
-
-def rgcn(args):
-    # load graph data
-    if args.dataset=="database_data":
-        raise NotImplementedError
-    else:
-        num_nodes, num_rels, num_classes, train_idx,test_idx,\
-        val_idx,labels, feats,edge_type,edge_norm,edge_src,edge_dst= load_gen_data(args)
-
-    # edge type and normalization factor
-    edge_type = torch.from_numpy(edge_type)
-    edge_norm = torch.from_numpy(edge_norm).unsqueeze(1)
-    labels = torch.from_numpy(labels).view(-1)
-
-    # check cuda
-    use_cuda = args.gpu >= 0 and torch.cuda.is_available()
-    if use_cuda:
-        torch.cuda.set_device(args.gpu)
-        feats = feats.cuda()
-        edge_type = edge_type.cuda()
-        edge_norm = edge_norm.cuda()
-        labels = labels.cuda()
-
-    # create graph
-    g = DGLGraph()
-    g.add_nodes(num_nodes)
-    g.add_edges(edge_src, edge_dst)
-    inp_dim=len(g)
-    # create model
-    model = PanRepRGCN(len(g),
-                    args.n_hidden,
-                    inp_dim,
-                    num_classes,
-                    num_rels,
-                    num_bases=args.n_bases,
-                    num_hidden_layers=args.n_layers - 2,
-                    dropout=args.dropout,
-                    use_self_loop=args.use_self_loop,
-                    use_cuda=use_cuda)
-
-    if use_cuda:
-        model.cuda()
-
-    # optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2norm)
-
-    # training loop
-    print("start training...")
-    forward_time = []
-    backward_time = []
-    model.train()
-    for epoch in range(args.n_epochs):
-        optimizer.zero_grad()
-        t0 = time.time()
-        reconstructed_feats,embedding = model(g, feats, edge_type, edge_norm)
-        loss = reconstruction_loss(reconstructed_feats[train_idx], feats[train_idx])
-        t1 = time.time()
-        loss.backward()
-        optimizer.step()
-        t2 = time.time()
-
-        forward_time.append(t1 - t0)
-        backward_time.append(t2 - t1)
-        print("Epoch {:05d} | Train Forward Time(s) {:.4f} | Backward Time(s) {:.4f}".
-              format(epoch, forward_time[-1], backward_time[-1]))
-        #train_acc = torch.sum(reconstructed_feats[train_idx].argmax(dim=1) == feats[train_idx]).item() / len(train_idx)
-        val_loss =reconstruction_loss(reconstructed_feats[val_idx], feats[val_idx])
-        #val_acc = torch.sum(reconstructed_feats[val_idx].argmax(dim=1) == feats[val_idx]).item() / len(val_idx)
-        print("Train Loss: {:.4f} |  Validation loss: {:.4f}".
-              format(loss.item(), val_loss.item()))
-    print()
-
-    model.eval()
-    with torch.no_grad():
-        reconstructed_feats,embedding = model.forward(g, feats, edge_type, edge_norm)
-    test_loss = reconstruction_loss(reconstructed_feats[test_idx], feats[test_idx])
-    print(" Test loss: {:.4f}".format(test_loss.item()))
-    print()
-
-    print("Mean forward time: {:4f}".format(np.mean(forward_time[len(forward_time) // 4:])))
-    print("Mean backward time: {:4f}".format(np.mean(backward_time[len(backward_time) // 4:])))
-    ###
-    # Use the encoded features for classification
-    # Here we initialize the features using the reconstructed ones
-    feats=embedding
-    inp_dim=feats.shape[1]
-    model = ClassifierRGCN(len(g),
-                         args.n_hidden,
-                         inp_dim,
-                         num_classes,
-                         num_rels,
-                         num_bases=args.n_bases,
-                         num_hidden_layers=args.n_layers - 2,
-                         dropout=args.dropout,
-                         use_self_loop=args.use_self_loop,
-                         use_cuda=use_cuda)
-
-    if use_cuda:
-        model.cuda()
-
-    # optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2norm)
-
-    # training loop
-    print("start training...")
-    forward_time = []
-    backward_time = []
-    model.train()
-    for epoch in range(args.n_epochs):
-        optimizer.zero_grad()
-        t0 = time.time()
-        logits = model(g, feats, edge_type, edge_norm)
-        loss = F.cross_entropy(logits[train_idx], labels[train_idx])
-        t1 = time.time()
-        loss.backward()
-        optimizer.step()
-        t2 = time.time()
-
-        forward_time.append(t1 - t0)
-        backward_time.append(t2 - t1)
-        print("Epoch {:05d} | Train Forward Time(s) {:.4f} | Backward Time(s) {:.4f}".
-              format(epoch, forward_time[-1], backward_time[-1]))
-        train_acc = torch.sum(logits[train_idx].argmax(dim=1) == labels[train_idx]).item() / len(train_idx)
-        val_loss = F.cross_entropy(logits[val_idx], labels[val_idx])
-        val_acc = torch.sum(logits[val_idx].argmax(dim=1) == labels[val_idx]).item() / len(val_idx)
-        print("Train Accuracy: {:.4f} | Train Loss: {:.4f} | Validation Accuracy: {:.4f} | Validation loss: {:.4f}".
-              format(train_acc, loss.item(), val_acc, val_loss.item()))
-    print()
-
-    model.eval()
-    logits = model.forward(g, feats, edge_type, edge_norm)
-    test_loss = F.cross_entropy(logits[test_idx], labels[test_idx])
-    test_acc = torch.sum(logits[test_idx].argmax(dim=1) == labels[test_idx]).item() / len(test_idx)
-    print("Test Accuracy: {:.4f} | Test loss: {:.4f}".format(test_acc, test_loss.item()))
-    print()
-
-    print("Mean forward time: {:4f}".format(np.mean(forward_time[len(forward_time) // 4:])))
-    print("Mean backward time: {:4f}".format(np.mean(backward_time[len(backward_time) // 4:])))
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PanRep')
     parser.add_argument("--dropout", type=float, default=0.3,
             help="dropout probability")
-    parser.add_argument("--n-hidden", type=int, default=50,
+    parser.add_argument("--n-hidden", type=int, default=30,
             help="number of hidden units") # use 16, 2 for debug
-    parser.add_argument("--gpu", type=int, default=0,
+    parser.add_argument("--gpu", type=int, default=-1,
             help="gpu")
     parser.add_argument("--lr", type=float, default=1e-2,
             help="learning rate")
@@ -364,12 +237,18 @@ if __name__ == '__main__':
             help="number of filter weight matrices, default: -1 [use all]")
     parser.add_argument("--n-layers", type=int, default=4,
             help="number of propagation rounds")
-    parser.add_argument("-e", "--n-epochs", type=int, default=100,
+    parser.add_argument("-e", "--n-epochs", type=int, default=20,
             help="number of training epochs for decoder")
-    parser.add_argument("-ec", "--n-cepochs", type=int, default=1000,
+    parser.add_argument("-ec", "--n-cepochs", type=int, default=20,
                         help="number of training epochs for classification")
     parser.add_argument("-num_masked", "--n-masked-nodes", type=int, default=20,
                         help="number of masked nodes")
+    parser.add_argument("-num_masked_links", "--n-masked-links", type=int, default=50,
+                        help="number of masked links")
+    parser.add_argument("-negative_rate", "--negative-rate", type=int, default=10,
+                        help="number of negative examples per masked link")
+
+
     parser.add_argument("-d", "--dataset", type=str, required=True,
             help="dataset to use")
     parser.add_argument("-en", "--encoder", type=str, required=True,
@@ -380,12 +259,25 @@ if __name__ == '__main__':
             help="remove untouched nodes and relabel")
     parser.add_argument("--use-self-loop", default=False, action='store_true',
             help="include self feature as a special relation")
+    parser.add_argument("--use-infomax-loss", default=True, action='store_true',
+                        help="use infomax task supervision")
+    parser.add_argument("--use-reconstruction-loss", default=False, action='store_true',
+                        help="use feature reconstruction task supervision")
+    parser.add_argument("--node-masking", default=False, action='store_true',
+                        help="mask as subset of node features")
+    parser.add_argument("--loss-over-all-nodes", default=True, action='store_true',
+                        help="compute the feature reconstruction loss over all nods or just the masked")
+    parser.add_argument("--link-prediction", default=False, action='store_true',
+                       help="use link prediction as supervision task")
+    parser.add_argument("--mask-links", default=True, action='store_true',
+                       help="mask the links to be predicted")
+
     fp = parser.add_mutually_exclusive_group(required=False)
     fp.add_argument('--validation', dest='validation', action='store_true')
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'database_data','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'imdb','--encoder', 'RGCN'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     main(args)

@@ -3,13 +3,13 @@ from data_handler import imbd_data_loader
 import dgl
 import pickle
 import os
+import torch
 
 def embed_genre():
     return
-def embed_movie_info(movie_id,id2info_dic,id2genre_dic,feat_nbr):
-    feat=np.zeros((feat_nbr))
-    if movie_id in id2info_dic:
-        feat[0] = len(id2info_dic[movie_id][0])
+def embed_movie_info(movie_id,id2str_info_dic,id2numer_info_dic,id2genre_dic,nbr_movie_feat):
+    if movie_id in id2str_info_dic:
+        feat= torch.concatinate( id2str_info_dic[movie_id])
     return feat
 def embed_person_info(person_id,people_id2name_dic,feat_nbr):
     feat = np.zeros((feat_nbr))
@@ -18,11 +18,85 @@ def embed_person_info(person_id,people_id2name_dic,feat_nbr):
     return feat
 # TODO how to treat missing attributes
 
-def graph_generator(IMDB_DIR=' ../data/imdb_data/'):
-    _, _, id2info_dic, id2genre_dic, \
-    id2l_director_dic,  id2l_writer_dic, id2l_principal_dic, people_id2name_dic= imbd_data_loader.load_imdb_dics()
+def graph_generator(IMDB_DIR='../data/imdb_data/'):
+    id2numer_info_dic, id2str_info_dic, id2genre_dic, id2l_director_dic, id2l_writer_dic, \
+    id2l_principal_dic, people_id2name_dic, people_id2primaryProfession= imbd_data_loader.load_imdb_subset_dics()
+    id2numer_info_dic_small={}
+    i=0
+    for key in id2numer_info_dic.keys():
+        i+=1
+        if i==100:
+            break
+        id2numer_info_dic_small[key]=id2numer_info_dic[key]
+    with open(os.path.join(IMDB_DIR, '_id2numer_info_dic_small.pkl'), 'wb') as f:
+        pickle.dump(id2numer_info_dic_small, f)
+    id2str_info_dic_small = {}
+    i = 0
+    for key in id2str_info_dic.keys():
+        i+=1
+        if i==100:
+            break
+        id2str_info_dic_small[key] = id2str_info_dic[key]
+    with open(os.path.join(IMDB_DIR, '_id2str_info_dic_small.pkl'), 'wb') as f:
+        pickle.dump(id2str_info_dic_small, f)
+    id2genre_dic_small = {}
+    i=0
+    for key in id2genre_dic.keys():
+        i+=1
+        if i==100:
+            break
+        id2genre_dic_small[key] = id2genre_dic[key]
+    with open(os.path.join(IMDB_DIR, '_id2genre_dic_small.pkl'), 'wb') as f:
+        pickle.dump(id2genre_dic_small, f)
+    id2l_director_dic_small = {}
+    i=0
+    for key in id2l_director_dic.keys():
+        i+=1
+        if i==100:
+            break
+        id2l_director_dic_small[key] = id2l_director_dic[key]
+    with open(os.path.join(IMDB_DIR, '_id2l_director_dic_small.pkl'), 'wb') as f:
+        pickle.dump(id2l_director_dic_small, f)
+    id2l_writer_dic_small = {}
+    i=0
+    for key in id2l_writer_dic.keys():
+        i+=1
+        if i==100:
+            break
+        id2l_writer_dic_small[key] = id2l_writer_dic[key]
+    with open(os.path.join(IMDB_DIR, '_id2l_writer_dic_small.pkl'), 'wb') as f:
+        pickle.dump(id2l_writer_dic_small, f)
+    id2l_principal_dic_small = {}
+    i=0
+    for key in id2l_principal_dic.keys():
+        i+=1
+        if i==100:
+            break
+        id2l_principal_dic_small[key] = id2l_principal_dic[key]
+    with open(os.path.join(IMDB_DIR, '_id2l_principal_dic_small.pkl'), 'wb') as f:
+        pickle.dump(id2l_principal_dic_small, f)
+    people_id2name_dic_small = {}
+    i=0
+    for key in people_id2name_dic.keys():
+        i+=1
+        if i==100:
+            break
+        people_id2name_dic_small[key] = people_id2name_dic[key]
+    with open(os.path.join(IMDB_DIR, '_people_id2name_dic_small.pkl'), 'wb') as f:
+        pickle.dump(people_id2name_dic_small, f)
+    people_id2primaryProfession_small = {}
+    i=0
+    for key in people_id2primaryProfession.keys():
+        i+=1
+        if i==100:
+            break
+        people_id2primaryProfession_small[key] = people_id2primaryProfession[key]
+    with open(os.path.join(IMDB_DIR, '_people_id2primaryProfession_small.pkl'), 'wb') as f:
+        pickle.dump(people_id2primaryProfession_small, f)
 
-    use_principals = False
+    #RUN CODE ABOVE in EVALUATOR
+
+    use_principals = True
 
     # Generate edge lists
     id2l_director_edge_list = [(k, d) for k, v in id2l_director_dic.items() for d in v]
@@ -76,14 +150,15 @@ def graph_generator(IMDB_DIR=' ../data/imdb_data/'):
     nbr_person_feat=1
     nbr_movie_feat=1
     people_feat = np.zeros((len(uniq_people), nbr_person_feat))
-
+    # TODO change to torch
     for i in range(len(uniq_people)):
         person_id=uniq_people[i]
         people_feat[i,:]=embed_person_info(person_id,people_id2name_dic,nbr_person_feat)
     movie_feat = np.zeros((len(uniq_mov), nbr_movie_feat))
     for i in range(len(uniq_mov)):
         movie_id=uniq_mov[i]
-        movie_feat[i,:]=embed_movie_info(movie_id,id2info_dic,id2genre_dic,nbr_movie_feat)
+        movie_feat[i,:]=embed_movie_info(movie_id,id2str_info_dic,id2numer_info_dic,
+                                         id2genre_dic,nbr_movie_feat)
     # TODO conver to torch th.array()
     g.nodes['movie'].data['features'] = movie_feat
     # TODO check datatype

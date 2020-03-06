@@ -17,7 +17,7 @@ import time
 
 # nohup python imbd_data_loader.py > myprogram.out 2> myprogram.err &
 csv.field_size_limit(sys.maxsize)
-nbr_processes = 180
+nbr_processes = 90
 def embed_genre_dic(embed_dict, id2class_dic):
     mlb = MultiLabelBinarizer(classes=list(embed_dict.values()), sparse_output=True)
     def embed_genre(embed_dict, classes_str, mlb):
@@ -295,28 +295,29 @@ def parallel_dict_nlp_processing(dictionary_to_transform, nlps):
         :param nlps: the nlp models to use in the transformation
         :return:
         '''
-        def embed_titles(d, vt, kt, split, len_per_split):
-            if len_per_split * split >= len(vt):
-                vs = vt[len_per_split * (split - 1):]
-                ks = kt[len_per_split * (split - 1):]
-            else:
-                vs = vt[len_per_split * (split - 1):len_per_split * (split)]
-                ks = kt[len_per_split * (split - 1):len_per_split * (split)]
+        def embed_titles(d, vs, ks):
             for v, k in zip(vs, ks):
                 d[k] = embed_word2vec(v, nlps)
-
-
         manager = Manager()
-
         d = manager.dict()
         keys, values = zip(*dictionary_to_transform.items())
         len_per_split = len(keys) // nbr_processes
-        job = [Process(target=embed_titles, args=(d, values, keys, i, len_per_split)) for i in
-               range(1, nbr_processes + 2)]
+        if len_per_split==0:
+            len_per_split=1
+        # TODO do not pass the whole value key only the subsets...
+        job=[]
+        for i in range(1, nbr_processes + 2):
+            if len_per_split * i >= len(values):
+                vs = values[len_per_split * (i - 1):]
+                ks = keys[len_per_split * (i - 1):]
+            else:
+                vs = values[len_per_split * (i - 1):len_per_split * (i)]
+                ks = keys[len_per_split * (i - 1):len_per_split * (i)]
+            job+= [Process(target=embed_titles, args=(d, vs,ks,))]
         _ = [p.start() for p in job]
         _ = [p.join() for p in job]
 
-
+        #print(d)
         return d
 
 
@@ -334,7 +335,7 @@ def read_subset_imdb2dic(nlp_model='en_fr_lang', IMDB_DIR='../data/imdb_data/'):
         genre_embed_dict={}
         count=0 #30 total
         for row in IMDB_title_name:
-            #if count== 15:
+            #if count== 10:
                 # for debugging
             #    break
             if len(row)==9:
@@ -373,14 +374,15 @@ def read_subset_imdb2dic(nlp_model='en_fr_lang', IMDB_DIR='../data/imdb_data/'):
     print('Genre embedding runtime')
     print(e - s)
     s = time.time()
-    id2str_info_dic=parallel_dict_nlp_processing(id2str_info_dic,nlps=nlps_title)
+    # get the real dict from the proxy dictionary of the multiprocessing
+    id2str_info_dic=dict(parallel_dict_nlp_processing(id2str_info_dic,nlps=nlps_title))
     e = time.time()
     print('Parallel processing runtime')
     print(e - s)
-    #print(len(id2str_info_dic.values()))
+    print(len(id2str_info_dic.values()))
     #print(id2str_info_dic.keys())
 
-
+    #print(id2str_info_dic)
 
 
     with open(os.path.join(IMDB_DIR, "title.ratings.tsv"), newline='', encoding='utf-8') as csvfile:
@@ -393,7 +395,8 @@ def read_subset_imdb2dic(nlp_model='en_fr_lang', IMDB_DIR='../data/imdb_data/'):
         # TODO Check if this title is important or not.. does it exist in other dictionaries
 
             if str_id in id2numer_info_dic:
-                id2numer_info_dic[str_id] += [float(average_rating),float(num_votes)]
+                id2numer_info_dic[str_id] +=\
+                    [float(average_rating),float(num_votes)]
             else:
                 id2numer_info_dic[str_id] = [float(average_rating), float(num_votes)]
 
@@ -410,7 +413,6 @@ def read_subset_imdb2dic(nlp_model='en_fr_lang', IMDB_DIR='../data/imdb_data/'):
     sys.stdout.flush()
     ###################################################################################
     ###################################################################################
-
     id2l_director_dic = {}
     id2l_writer_dic = {}
     id2l_principal_dic={}
@@ -463,7 +465,7 @@ def read_subset_imdb2dic(nlp_model='en_fr_lang', IMDB_DIR='../data/imdb_data/'):
     e = time.time()
     print('Read and process principals')
     print(e - s)
-    print(len(id2str_info_dic.values()))
+    #print(len(id2str_info_dic.values()))
 
     # TODO Possible Bug. How about when only one or 2 directors or writers exists?
     with open(os.path.join(IMDB_DIR, "title.crew.tsv"), newline='', encoding='utf-8') as csvfile:
@@ -536,7 +538,9 @@ def read_subset_imdb2dic(nlp_model='en_fr_lang', IMDB_DIR='../data/imdb_data/'):
     print('Read and process people info')
     e = time.time()
     print(e - s)
-    print(len(id2str_info_dic.values()))
+
+    #print(len(id2str_info_dic.values()))
+
     print("IMDb dics generated ...")
     sys.stdout.flush()
     return  id2numer_info_dic,id2str_info_dic, id2genre_dic, id2l_director_dic, id2l_writer_dic,\
@@ -562,8 +566,32 @@ def load_imdb_dics():
         people_id2name_dic = pickle.load(f)
     print("IMDb dics loaded ...")
 
+
     return titles2id_dic, titles2year_dic, id2info_dic, id2genre_dic, \
            id2l_director_dic, id2l_writer_dic,id2l_principal_dic, people_id2name_dic
+def load_imdb_small_subset_dics():
+    with open(os.path.join(IMDB_DIR,'_id2numer_info_dic_small.pkl'), 'rb') as f:
+        id2numer_info_dic = pickle.load(f)
+    with open(os.path.join(IMDB_DIR,'_id2str_info_dic_small.pkl'), 'rb') as f:
+        id2str_info_dic = pickle.load(f)
+    with open(os.path.join(IMDB_DIR, '_id2genre_dic_small.pkl'), 'rb') as f:
+        id2genre_dic = pickle.load(f)
+
+    with open(os.path.join(IMDB_DIR,'_id2l_director_dic_small.pkl'), 'rb') as f:
+        id2l_director_dic = pickle.load(f)
+    with open(os.path.join(IMDB_DIR,'_id2l_principal_dic_small.pkl'), 'rb') as f:
+        id2l_principal_dic = pickle.load(f)
+    with open(os.path.join(IMDB_DIR,'_id2l_writer_dic_small.pkl'), 'rb') as f:
+        id2l_writer_dic = pickle.load(f)
+    with open(os.path.join(IMDB_DIR,'_people_id2name_dic_small.pkl'), 'rb') as f:
+        people_id2name_dic = pickle.load(f)
+    with open(os.path.join(IMDB_DIR, '_people_id2primaryProfession_small.pkl'), 'rb') as f:
+        people_id2primaryProfession = pickle.load(f)
+    print("IMDb dics loaded ...")
+
+    return id2numer_info_dic,id2str_info_dic, id2genre_dic, id2l_director_dic, id2l_writer_dic,\
+            id2l_principal_dic, people_id2name_dic, people_id2primaryProfession
+
 def load_imdb_subset_dics():
     with open(os.path.join(IMDB_DIR,'_id2numer_info_dic.pkl'), 'rb') as f:
         id2numer_info_dic = pickle.load(f)
