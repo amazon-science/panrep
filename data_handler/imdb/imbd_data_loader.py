@@ -41,7 +41,7 @@ def embed_word2vec(title, nlps):
         else:
             vector=np.concatenate((vector, doc.vector))
     return vector
-IMDB_DIR= '../data/imdb_data/'
+IMDB_DIR= '../../data/imdb_data/'
 def _download_imdb(flag_overwrite=False):
     if os.path.isdir(IMDB_DIR) is False:
         os.mkdir(IMDB_DIR)

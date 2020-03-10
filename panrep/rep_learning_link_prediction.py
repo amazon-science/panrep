@@ -17,39 +17,29 @@ import torch.nn.functional as F
 from dgl import DGLGraph
 import dgl
 from classifiers import ClassifierRGCN,ClassifierMLP
-from load_data import load_kaggle_shoppers_data, load_wn_data,load_imdb_data
+from load_data import load_kaggle_shoppers_data, load_wn_data,load_imdb_data,load_link_pred_wn_data
 from model import PanRepRGCNHetero
-from sklearn.metrics import roc_auc_score
-from node_supervision_tasks import reconstruction_loss
-from edge_samling import hetero_edge_masker_sampler,create_edge_mask
+import utils
+from classifiers import DLinkPredictor as DownstreamLinkPredictor
+from edge_samling import hetero_edge_masker_sampler,create_edge_mask,negative_sampling
 from encoders import EncoderRelGraphConvHetero,EncoderRelGraphAttentionHetero
-
 def main(args):
     rgcn_hetero(args)
 
 def rgcn_hetero(args):
-    if args.dataset == "kaggle_shoppers":
-        train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_kaggle_shoppers_data(args)
-    elif args.dataset == "wn":
-        train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_wn_data(args)
-    elif args.dataset == "imdb":
-        train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_imdb_data(args)
+    if args.dataset == "wn":
+        train_edges, test_edges, valid_edges, g, featless_node_types = load_link_pred_wn_data(args)
     else:
         raise NotImplementedError
 
-
-    category_id = len(g.ntypes)
-    for i, ntype in enumerate(g.ntypes):
-        if ntype == category:
-            category_id = i
 
     # check cuda
     use_cuda = args.gpu >= 0 and torch.cuda.is_available()
     if use_cuda:
         torch.cuda.set_device(args.gpu)
-        labels = labels.cuda()
-        #train_idx = train_idx.cuda()
-        #test_idx = test_idx.cuda()
+        # labels = labels.cuda()
+        # train_idx = train_idx.cuda()
+        # test_idx = test_idx.cuda()
 
 
     device = torch.device("cuda:" + str(args.gpu) if use_cuda else "cpu")
@@ -83,14 +73,14 @@ def rgcn_hetero(args):
                                             dropout=args.dropout,
                                             use_self_loop=args.use_self_loop)
 
-    model = PanRepRGCNHetero(g,
-                             args.n_hidden,
-                             args.n_hidden,
+    model = PanRepRGCNHetero(g=g,
+                             h_dim=args.n_hidden,
+                             out_dim=args.n_hidden,
                              encoder=encoder,
                              num_hidden_layers=args.n_layers - 2,
                              dropout=args.dropout,
-                             masked_node_types=masked_node_types,
-                             loss_over_all_nodes=loss_over_all_nodes,
+                             masked_node_types= featless_node_types,
+                             loss_over_all_nodes= loss_over_all_nodes,
                              use_infomax_task=use_infomax_loss,
                              use_reconstruction_task=use_reconstruction_loss,
                              link_prediction_task=link_prediction,
@@ -119,7 +109,7 @@ def rgcn_hetero(args):
     for epoch in range(args.n_epochs):
         t_nm_0 = time.time()
         if node_masking and use_reconstruction_loss:
-            masked_nodes,new_g = node_masker(g, num_nodes=num_masked_nodes, masked_node_types=masked_node_types)
+            masked_nodes,new_g = node_masker(g, num_nodes=num_masked_nodes, masked_node_types=featless_node_types)
             model.updated_graph(new_g)
         else:
             new_g = g
@@ -176,14 +166,28 @@ def rgcn_hetero(args):
     ###
     # Use the encoded features for classification
     # Here we initialize the features using the reconstructed ones
-    feats = embeddings[category_id]
-    inp_dim = feats.shape[1]
-    model = ClassifierMLP(input_size=inp_dim, hidden_size=args.n_hidden,out_size=num_classes)
+    inp_dim = args.n_hidden
+    nbr_downstream_layers = 1
+    pan_rep_model=model
+    if use_cuda:
+        for i in range(len(embeddings)):
+            embeddings[i] = embeddings[i].cpu()
+        for e in pan_rep_model.linkPredictor.w_relation.keys():
+            pan_rep_model.linkPredictor.w_relation[e] = pan_rep_model.linkPredictor.w_relation[e].cpu()
+
+    print('original embedding')
+    or_mrr = utils.calc_mrr(g, embeddings, pan_rep_model.linkPredictor.w_relation,
+                            valid_edges, hits=[1, 3, 10], eval_bz=args.eval_batch_size)
+    if use_cuda:
+        for i in range(len(embeddings)):
+            embeddings[i] = embeddings[i].cuda()
+    model = DownstreamLinkPredictor(in_dim=inp_dim,out_dim=inp_dim, G=g, use_cuda=use_cuda,num_hidden_layers=nbr_downstream_layers)
 
     if use_cuda:
         model.cuda()
 
     # optimizer
+
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2norm)
 
     # training loop
@@ -191,74 +195,129 @@ def rgcn_hetero(args):
     forward_time = []
     backward_time = []
     model.train()
-    train_indices = torch.tensor(train_idx).to(device);
-    valid_indices = torch.tensor(val_idx).to(device);
-    test_indices = torch.tensor(test_idx).to(device);
-    best_val_acc = 0
-    best_test_acc = 0
 
-    if num_classes>1:
-        labels_n = torch.zeros((np.shape(labels)[0], num_classes))
-        if use_cuda:
-            labels_n.cuda()
-        for i in range(np.shape(labels)[0]):
-            labels_n[i,int(labels[i])]=1
-    else:
-        labels_n=labels
-
+    best_mrr = 0
+    model_state_file = 'model_state.pth'
     for epoch in range(args.n_cepochs):
         optimizer.zero_grad()
-        logits = model(feats)
-        loss = F.binary_cross_entropy_with_logits(logits[train_idx].squeeze(1), labels_n[train_idx].type(torch.FloatTensor).to(device))
+        t_lm_0 = time.time()
+        samples_d, labels_d = negative_sampling(g,train_edges,  negative_rate=args.negative_rate_downstream)
+        n_labels_d = {}
+        for e in labels_d.keys():
+                n_labels_d[e] = torch.from_numpy(labels_d[e])
+                if use_cuda:
+                    n_labels_d[e] = n_labels_d[e].cuda()
+        labels_d = n_labels_d
+        t_lm_1 = time.time()
+
+        t0 = time.time()
+        embed = model(embeddings)
+        loss = model.get_loss( embed, samples_d, labels_d)
+        t1 = time.time()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_norm)  # clip gradients
         optimizer.step()
-        # TODO is this step slowing down because of CPU?
-        pred = torch.sigmoid(logits).detach().cpu().numpy()
-        train_acc = roc_auc_score(labels_n.cpu()[train_indices.cpu()].numpy(), pred[train_indices.cpu()])
-        val_acc = roc_auc_score(labels_n.cpu()[valid_indices.cpu()].numpy(), pred[valid_indices.cpu()])
-        test_acc = roc_auc_score(labels_n.cpu()[test_indices.cpu()].numpy(), pred[test_indices.cpu()])
+        t2 = time.time()
 
-        if best_val_acc < val_acc:
-            best_val_acc = val_acc
-            best_test_acc = test_acc
+        forward_time.append(t1 - t0)
+        backward_time.append(t2 - t1)
+        print("Epoch {:04d} | Loss {:.4f} | Best MRR {:.4f} | Forward {:.4f}s | Backward {:.4f}s".
+              format(epoch, loss.item(), best_mrr, forward_time[-1], backward_time[-1]))
 
-        if epoch % 5 == 0:
-            print('Loss %.4f, Train Acc %.4f, Val Acc %.4f (Best %.4f), Test Acc %.4f (Best %.4f)' % (
-                loss.item(),
-                train_acc.item(),
-                val_acc.item(),
-                best_val_acc.item(),
-                test_acc.item(),
-                best_test_acc.item(),
-            ))
-    print()
+        optimizer.zero_grad()
+
+        # validation
+        if epoch % args.evaluate_every == 0:
+            # perform validation on CPU because full graph is too large
+            if use_cuda:
+                model.cpu()
+                for i in range(len(embeddings)):
+                    embeddings[i]=embeddings[i].cpu()
+                for ntype in model.G.ntypes:
+                    model.G.nodes[ntype].data['features']=model.G.nodes[ntype].data['features'].cpu()
+                for etype in model.G.etypes:
+                    model.G.edges[etype].data['mask']=model.G.edges[etype].data['mask'].cpu()
+                for e in model.w_relation.keys():
+                    model.w_relation[e]=model.w_relation[e].cpu()
+            model.eval()
+            print("start eval")
+            embed = model(embeddings)
+            mrr = utils.calc_mrr(g,embed, model.w_relation, valid_edges,
+                                 hits=[1, 3, 10], eval_bz=args.eval_batch_size)
+
+            # save best model
+            if mrr < best_mrr:
+                if epoch >= args.n_epochs:
+                    break
+            else:
+                best_mrr = mrr
+                torch.save({'state_dict': model.state_dict(), 'epoch': epoch},
+                           model_state_file)
+            if use_cuda:
+                model.cuda()
+                for i in range(len(embeddings)):
+                    embeddings[i]=embeddings[i].cuda()
+                for ntype in model.G.ntypes:
+                    model.G.nodes[ntype].data['features'] = model.G.nodes[ntype].data['features'].cuda()
+                for etype in model.G.etypes:
+                    model.G.edges[etype].data['mask']=model.G.edges[etype].data['mask'].cuda()
+                for e in model.w_relation.keys():
+                    model.w_relation[e]=model.w_relation[e].cuda()
+
+    print("training done")
+    print("Mean forward time: {:4f}s".format(np.mean(forward_time)))
+    print("Mean Backward time: {:4f}s".format(np.mean(backward_time)))
+
+    print("\nstart testing:")
+    # use best model checkpoint
+    checkpoint = torch.load(model_state_file)
+    if use_cuda:
+        model.cpu()  # test on CPU
+        for i in range(len(embeddings)):
+            embeddings[i] = embeddings[i].cpu()
+        for ntype in model.G.ntypes:
+            model.G.nodes[ntype].data['features'] = model.G.nodes[ntype].data['features'].cpu()
+        for etype in model.G.etypes:
+            model.G.edges[etype].data['mask'] = model.G.edges[etype].data['mask'].cpu()
+        for e in model.w_relation.keys():
+            model.w_relation[e] = model.w_relation[e].cpu()
+    model.eval()
+    model.load_state_dict(checkpoint['state_dict'])
+    print("Using best epoch: {}".format(checkpoint['epoch']))
+    embed = model(embeddings)
+    utils.calc_mrr(g, embed, model.w_relation, test_edges,
+                         hits=[1, 3, 10], eval_bz=args.eval_batch_size)
+
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PanRep')
-    parser.add_argument("--dropout", type=float, default=0.3,
+    parser.add_argument("--dropout", type=float, default=0.4,
             help="dropout probability")
-    parser.add_argument("--n-hidden", type=int, default=30,
+    parser.add_argument("--n-hidden", type=int, default=100,
             help="number of hidden units") # use 16, 2 for debug
     parser.add_argument("--gpu", type=int, default=0,
             help="gpu")
+    parser.add_argument("--grad-norm", type=float, default=1.0,
+            help="norm to clip gradient to")
     parser.add_argument("--lr", type=float, default=1e-2,
             help="learning rate")
-    parser.add_argument("--n-bases", type=int, default=10,
+    parser.add_argument("--n-bases", type=int, default=5,
             help="number of filter weight matrices, default: -1 [use all]")
-    parser.add_argument("--n-layers", type=int, default=4,
+    parser.add_argument("--n-layers", type=int, default=2,
             help="number of propagation rounds")
-    parser.add_argument("-e", "--n-epochs", type=int, default=200,
+    parser.add_argument("-e", "--n-epochs", type=int, default=300,
             help="number of training epochs for decoder")
-    parser.add_argument("-ec", "--n-cepochs", type=int, default=200,
+    parser.add_argument("-ec", "--n-cepochs", type=int, default=500,
                         help="number of training epochs for classification")
-    parser.add_argument("-num_masked", "--n-masked-nodes", type=int, default=20,
+    parser.add_argument("-num_masked", "--n-masked-nodes", type=int, default=100,
                         help="number of masked nodes")
-    parser.add_argument("-num_masked_links", "--n-masked-links", type=int, default=50,
+    parser.add_argument("-num_masked_links", "--n-masked-links", type=int, default=100,
                         help="number of masked links")
-    parser.add_argument("-negative_rate", "--negative-rate", type=int, default=10,
+    parser.add_argument("-negative_rate", "--negative-rate", type=int, default=2,
                         help="number of negative examples per masked link")
-
+    parser.add_argument("-negative_rate_d", "--negative-rate-downstream", type=int, default=2,
+                        help="number of negative examples per masked link for the downstream task")
 
     parser.add_argument("-d", "--dataset", type=str, required=True,
             help="dataset to use")
@@ -272,17 +331,20 @@ if __name__ == '__main__':
             help="include self feature as a special relation")
     parser.add_argument("--use-infomax-loss", default=True, action='store_true',
                         help="use infomax task supervision")
-    parser.add_argument("--use-reconstruction-loss", default=True, action='store_true',
+    parser.add_argument("--use-reconstruction-loss", default=False, action='store_true',
                         help="use feature reconstruction task supervision")
-    parser.add_argument("--node-masking", default=True, action='store_true',
+    parser.add_argument("--node-masking", default=False, action='store_true',
                         help="mask as subset of node features")
-    parser.add_argument("--loss-over-all-nodes", default=True, action='store_true',
+    parser.add_argument("--loss-over-all-nodes", default=False, action='store_true',
                         help="compute the feature reconstruction loss over all nods or just the masked")
-    parser.add_argument("--link-prediction", default=False, action='store_true',
+    parser.add_argument("--link-prediction", default=True, action='store_true',
                        help="use link prediction as supervision task")
-    parser.add_argument("--mask-links", default=True, action='store_true',
+    parser.add_argument("--mask-links", default=False, action='store_true',
                        help="mask the links to be predicted")
-
+    parser.add_argument("--evaluate-every", type=int, default=100,
+            help="perform evaluation every n epochs")
+    parser.add_argument("--eval-batch-size", type=int, default=100,
+            help="batch size when evaluating")
     fp = parser.add_mutually_exclusive_group(required=False)
     fp.add_argument('--validation', dest='validation', action='store_true')
     fp.add_argument('--testing', dest='validation', action='store_false')
@@ -292,24 +354,3 @@ if __name__ == '__main__':
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     main(args)
-
-    '''
-    # perform edge neighborhood sampling to generate training graph and data
-    g, node_id, edge_type, node_norm, data, labels = \
-        utils.generate_sampled_graph_and_labels(
-            train_data, args.graph_batch_size, args.graph_split_size,
-            num_rels, adj_list, degrees, args.negative_sample,
-            args.edge_sampler)
-    print("Done edge sampling")
-
-    # set node/edge feature
-    node_id = torch.from_numpy(node_id).view(-1, 1).long()
-    edge_type = torch.from_numpy(edge_type)
-    edge_norm = node_norm_to_edge_norm(g, torch.from_numpy(node_norm).view(-1, 1))
-    data, labels = torch.from_numpy(data), torch.from_numpy(labels)
-    deg = g.in_degrees(range(g.number_of_nodes())).float().view(-1, 1)
-    if use_cuda:
-        node_id, deg = node_id.cuda(), deg.cuda()
-        edge_type, edge_norm = edge_type.cuda(), edge_norm.cuda()
-        data, labels = data.cuda(), labels.cuda()
-    '''

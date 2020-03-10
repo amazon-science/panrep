@@ -5,10 +5,10 @@ import math
 
 
 class LinkPredictor(nn.Module):
-    def __init__(self, out_dim, etypes, G, reg_param=0,use_cuda=False):
+    def __init__(self, out_dim, G, reg_param=0,use_cuda=False):
         super(LinkPredictor, self).__init__()
         self.reg_param = reg_param
-        self.etypes=etypes
+        self.etypes=G.etypes
         self.G=G
         self.w_relation={}
         self.ntype2id={}

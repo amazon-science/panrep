@@ -1,5 +1,5 @@
 import numpy as np
-from data_handler import imbd_data_loader
+from imdb import imbd_data_loader
 import dgl
 import pickle
 import os

@@ -10,13 +10,14 @@ def create_edge_mask(old_g,use_cude):
             g.edges[etype].data['mask'] = torch.tensor(np.ones((g.number_of_edges(etype))),dtype=torch.float32)
     return g
 
-def negative_sampling(pos_samples_d, num_entity_s_d,num_entity_o_d, negative_rate):
+def negative_sampling(g,pos_samples_d,  negative_rate):
     labels_d={}
     samples_d={}
     for e in pos_samples_d.keys():
-        pos_samples=pos_samples_d[e].transpose()
-        num_entity_o=num_entity_o_d[e]
-        num_entity_s=num_entity_s_d[e]
+        (s,e,o)=g.to_canonical_etype(e)
+        num_entity_s=g.number_of_nodes(s)
+        num_entity_o=g.number_of_nodes(o)
+        pos_samples=np.stack(pos_samples_d[e])#.transpose()
         size_of_batch = len(pos_samples)
         num_to_generate = size_of_batch * negative_rate
         neg_samples = np.tile(pos_samples, (negative_rate, 1))
@@ -48,31 +49,26 @@ def hetero_edge_masker_sampler(old_g, num_sampled_edges, negative_rate,edge_mask
     '''
     pos_samples = {}
     neg_samples = {}
-    num_entity_s = {}
-    num_entity_o = {}
     g = old_g.local_var()
     for etype in g.etypes:
         pos_samples[etype]=[]
         t0=time.time()
         u,v,eid=g.all_edges(form='all', etype=etype)
         tedgefetch=time.time()-t0
-        if len(eid)//3 <= num_sampled_edges:
-            lnum_sampled_edges = len(eid)//3
+        if len(eid)//2 <= num_sampled_edges:
+            lnum_sampled_edges = len(eid)//2
         else:
             lnum_sampled_edges = num_sampled_edges
         sampl_ids=np.random.choice(g.number_of_edges(etype),size=lnum_sampled_edges,replace=False)
-        pos_samples[etype]=np.stack((u[sampl_ids],v[sampl_ids]))
+        pos_samples[etype]=np.stack((u[sampl_ids],v[sampl_ids])).transpose()
         sampled_edges=eid[sampl_ids]
-        (s,e,o)=g.to_canonical_etype(etype)
-        num_entity_s[etype]=g.number_of_nodes(s)
-        num_entity_o[etype]=g.number_of_nodes(o)
 
         # mask edges
         if edge_masking:
             g.edges[etype].data['mask'][sampled_edges] = 0
     # TODO negative samples
     t0 = time.time()
-    samples_d,labels_d=negative_sampling(pos_samples, num_entity_s, num_entity_o, negative_rate)
+    samples_d,labels_d=negative_sampling(g,pos_samples, negative_rate)
     tnega = time.time() - t0
 
     # create function consuming pos

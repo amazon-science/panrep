@@ -201,43 +201,62 @@ def sort_and_rank(score, target):
     indices = indices[:, 1].view(-1)
     return indices
 
-def perturb_and_get_rank(embedding, w, a, r, b, test_size, batch_size=100):
+def perturb_and_get_rank(g,embedding, w, a, etype, b, test_size, batch_size=100):
     """ Perturb one element in the triplets
     """
     n_batch = (test_size + batch_size - 1) // batch_size
     ranks = []
+    ntype2id_dic={}
+    we=w[etype]
+    (s, e, o) = g.to_canonical_etype(etype)
+    for i, ntype in enumerate(g.ntypes):
+        ntype2id_dic[ntype]=i
     for idx in range(n_batch):
         print("batch {} / {}".format(idx, n_batch))
         batch_start = idx * batch_size
         batch_end = min(test_size, (idx + 1) * batch_size)
         batch_a = a[batch_start: batch_end]
-        batch_r = r[batch_start: batch_end]
-        emb_ar = embedding[batch_a] * w[batch_r]
-        emb_ar = emb_ar.transpose(0, 1).unsqueeze(2) # size: D x E x 1
-        emb_c = embedding.transpose(0, 1).unsqueeze(1) # size: D x 1 x V
+        wbatch = torch.transpose(we.repeat(1, batch_end - batch_start),0,1)
+        emb_ar = embedding[ntype2id_dic[s]][batch_a] * wbatch
+        emb_ar = emb_ar.transpose(0, 1).unsqueeze(2)  # size: D x E x 1
+        emb_c = embedding[ntype2id_dic[o]].transpose(0, 1).unsqueeze(1)  #
         # out-prod and reduce sum
-        out_prod = torch.bmm(emb_ar, emb_c) # size D x E x V
-        score = torch.sum(out_prod, dim=0) # size E x V
+        out_prod = torch.bmm(emb_ar, emb_c)  # size D x E x V
+        score = torch.sum(out_prod, dim=0)  # size E x V
         score = torch.sigmoid(score)
+        #Scores are very similar suspicious
+        #data loading works
+        #...
+
         target = b[batch_start: batch_end]
         ranks.append(sort_and_rank(score, target))
+
     return torch.cat(ranks)
 
 # TODO (lingfan): implement filtered metrics
 # return MRR (raw), and Hits @ (1, 3, 10)
-def calc_mrr(embedding, w, test_triplets, hits=[], eval_bz=100):
+def calc_mrr(g,embedding, w, test_triplets_d, hits=[], eval_bz=100):
+        ##
+        # Keep w as dictionary let extract r as key
+        #
     with torch.no_grad():
-        s = test_triplets[:, 0]
-        r = test_triplets[:, 1]
-        o = test_triplets[:, 2]
-        test_size = test_triplets.shape[0]
+        ranks_s = []
+        ranks_o = []
+        for etype in test_triplets_d.keys():
+            v = test_triplets_d[etype]
+            nv = np.array(v)
+            test_size = len(v)
+            s = torch.tensor(nv[:,0])
+            o = torch.tensor(nv[:,1])
+            # perturb subject
+            ranks_s.append(perturb_and_get_rank(g,embedding, w, o, etype, s, test_size, eval_bz))
+            # perturb object
+            ranks_o.append(perturb_and_get_rank(g,embedding, w, s, etype, o, test_size, eval_bz))
 
-        # perturb subject
-        ranks_s = perturb_and_get_rank(embedding, w, o, r, s, test_size, eval_bz)
-        # perturb object
-        ranks_o = perturb_and_get_rank(embedding, w, s, r, o, test_size, eval_bz)
-
+        ranks_s=torch.cat(ranks_s)
+        ranks_o = torch.cat(ranks_o)
         ranks = torch.cat([ranks_s, ranks_o])
+        # Careful of rank
         ranks += 1 # change to 1-indexed
 
         mrr = torch.mean(1.0 / ranks.float())

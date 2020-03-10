@@ -2,7 +2,7 @@ import snap
 import os
 import datetime
 
-from aux_files.mambo_master.utils.network_utils import load_mode_to_graph, load_crossnet_to_graph
+from utils.network_utils import load_mode_to_graph, load_crossnet_to_graph
 
 today = datetime.date.today()
 datestring = "20200304"
