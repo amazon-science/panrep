@@ -17,7 +17,7 @@ import torch.nn.functional as F
 from dgl import DGLGraph
 import dgl
 from classifiers import ClassifierRGCN,ClassifierMLP
-from load_data import load_kaggle_shoppers_data, load_wn_data,load_imdb_data
+from load_data import load_hetero_data
 from model import PanRepRGCNHetero
 from sklearn.metrics import roc_auc_score
 from node_supervision_tasks import reconstruction_loss
@@ -28,14 +28,8 @@ def main(args):
     rgcn_hetero(args)
 
 def rgcn_hetero(args):
-    if args.dataset == "kaggle_shoppers":
-        train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_kaggle_shoppers_data(args)
-    elif args.dataset == "wn":
-        train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_wn_data(args)
-    elif args.dataset == "imdb":
-        train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_imdb_data(args)
-    else:
-        raise NotImplementedError
+    train_idx, test_idx, val_idx, labels, g, category, num_classes, masked_node_types=\
+        load_hetero_data(args)
 
 
     category_id = len(g.ntypes)
@@ -191,20 +185,24 @@ def rgcn_hetero(args):
     forward_time = []
     backward_time = []
     model.train()
+
+    # TODO find all zero indices rows and remove.
+    zero_rows=np.where(~(labels).cpu().numpy().any(axis=1))[0]
+
+    train_idx=np.array(list(set(train_idx).difference(set(zero_rows))))
+    val_idx = np.array(list(set(val_idx).difference(set(zero_rows))))
+    test_idx = np.array(list(set(test_idx).difference(set(zero_rows))))
+
     train_indices = torch.tensor(train_idx).to(device);
     valid_indices = torch.tensor(val_idx).to(device);
     test_indices = torch.tensor(test_idx).to(device);
+
+
+
+
     best_val_acc = 0
     best_test_acc = 0
-
-    if num_classes>1:
-        labels_n = torch.zeros((np.shape(labels)[0], num_classes))
-        if use_cuda:
-            labels_n.cuda()
-        for i in range(np.shape(labels)[0]):
-            labels_n[i,int(labels[i])]=1
-    else:
-        labels_n=labels
+    labels_n=labels
 
     for epoch in range(args.n_cepochs):
         optimizer.zero_grad()
@@ -214,22 +212,27 @@ def rgcn_hetero(args):
         optimizer.step()
         # TODO is this step slowing down because of CPU?
         pred = torch.sigmoid(logits).detach().cpu().numpy()
-        train_acc = roc_auc_score(labels_n.cpu()[train_indices.cpu()].numpy(), pred[train_indices.cpu()])
-        val_acc = roc_auc_score(labels_n.cpu()[valid_indices.cpu()].numpy(), pred[valid_indices.cpu()])
-        test_acc = roc_auc_score(labels_n.cpu()[test_indices.cpu()].numpy(), pred[test_indices.cpu()])
 
+        train_acc = roc_auc_score(labels_n.cpu()[train_indices.cpu()].numpy(),
+                                  pred[train_indices.cpu()],average='macro')
+        val_acc = roc_auc_score(labels_n.cpu()[valid_indices.cpu()].numpy(),
+                                pred[valid_indices.cpu()],average='macro')
+        test_acc = roc_auc_score(labels_n.cpu()[test_indices.cpu()].numpy()
+                                 , pred[test_indices.cpu()],average='macro')
+        test_acc_w = roc_auc_score(labels_n.cpu()[test_indices.cpu()].numpy()
+                                 , pred[test_indices.cpu()], average='weighted')
         if best_val_acc < val_acc:
             best_val_acc = val_acc
             best_test_acc = test_acc
 
         if epoch % 5 == 0:
-            print('Loss %.4f, Train Acc %.4f, Val Acc %.4f (Best %.4f), Test Acc %.4f (Best %.4f)' % (
+            print('Loss %.4f, Train Acc %.4f, Val Acc %.4f (Best %.4f), Test Acc %.4f (Best %.4f), Weighted Test Acc %.4f' % (
                 loss.item(),
                 train_acc.item(),
                 val_acc.item(),
                 best_val_acc.item(),
                 test_acc.item(),
-                best_test_acc.item(),
+                best_test_acc.item(),test_acc_w.item()
             ))
     print()
 
@@ -244,13 +247,13 @@ if __name__ == '__main__':
             help="gpu")
     parser.add_argument("--lr", type=float, default=1e-2,
             help="learning rate")
-    parser.add_argument("--n-bases", type=int, default=10,
+    parser.add_argument("--n-bases", type=int, default=20,
             help="number of filter weight matrices, default: -1 [use all]")
-    parser.add_argument("--n-layers", type=int, default=4,
+    parser.add_argument("--n-layers", type=int, default=3,
             help="number of propagation rounds")
     parser.add_argument("-e", "--n-epochs", type=int, default=200,
             help="number of training epochs for decoder")
-    parser.add_argument("-ec", "--n-cepochs", type=int, default=200,
+    parser.add_argument("-ec", "--n-cepochs", type=int, default=400,
                         help="number of training epochs for classification")
     parser.add_argument("-num_masked", "--n-masked-nodes", type=int, default=20,
                         help="number of masked nodes")
@@ -272,7 +275,7 @@ if __name__ == '__main__':
             help="include self feature as a special relation")
     parser.add_argument("--use-infomax-loss", default=True, action='store_true',
                         help="use infomax task supervision")
-    parser.add_argument("--use-reconstruction-loss", default=True, action='store_true',
+    parser.add_argument("--use-reconstruction-loss", default=False, action='store_true',
                         help="use feature reconstruction task supervision")
     parser.add_argument("--node-masking", default=True, action='store_true',
                         help="mask as subset of node features")
@@ -288,7 +291,7 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'wn','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'imdb','--encoder', 'RGCN'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     main(args)
