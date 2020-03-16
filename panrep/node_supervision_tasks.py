@@ -5,15 +5,12 @@ import math
 
 
 class LinkPredictor(nn.Module):
-    def __init__(self, out_dim, G, reg_param=0,use_cuda=False):
+    def __init__(self, out_dim, etypes, ntype2id,reg_param=0,use_cuda=False):
         super(LinkPredictor, self).__init__()
         self.reg_param = reg_param
-        self.etypes=G.etypes
-        self.G=G
+        self.etypes=etypes
         self.w_relation={}
-        self.ntype2id={}
-        for i, ntype in enumerate(self.G.ntypes):
-            self.ntype2id[ntype] = i
+        self.ntype2id=ntype2id
         for ename in self.etypes:
             if use_cuda:
                 self.w_relation[ename] = nn.Parameter(torch.Tensor(out_dim,1)).cuda()
@@ -23,11 +20,12 @@ class LinkPredictor(nn.Module):
                                 gain=nn.init.calculate_gain('relu'))
 
 
-    def calc_score(self, embedding, dict_s_d):
+    def calc_score(self, g,embedding, dict_s_d):
         # DistMult
         score={}
+
         for etype in self.etypes:
-            (stype,e,dtype)=self.G.to_canonical_etype(etype)
+            (stype,e,dtype)=g.to_canonical_etype(etype)
             s = embedding[self.ntype2id[stype]][dict_s_d[etype][:, 0]]
             r = self.w_relation[etype].squeeze()
             o = embedding[self.ntype2id[dtype]][dict_s_d[etype][:, 1]]
@@ -42,10 +40,10 @@ class LinkPredictor(nn.Module):
             for e in self.w_relation.keys():
                 loss+=torch.mean(self.w_relation[e].pow(2))
             return loss
-    def forward(self, embed, edict_s_d, e_dict_labels):
+    def forward(self, g,embed, edict_s_d, e_dict_labels):
         # triplets is a list of data samples (positive and negative)
         # each row in the triplets is a 3-tuple of (source, relation, destination)
-        score = self.calc_score(embed, edict_s_d)
+        score = self.calc_score(g,embed, edict_s_d)
         predict_loss=0
         for etype in self.etypes:
             predict_loss += F.binary_cross_entropy_with_logits(score[etype], e_dict_labels[etype])
@@ -65,13 +63,12 @@ class AttributeDecoder(nn.Module):
         h=self.reconstruction_layer(h)
         return h
 class MultipleAttributeDecoder(nn.Module):
-    def __init__(self, out_size_dict, in_size, h_dim, G,masked_node_types, loss_over_all_nodes,activation=nn.ReLU()):
+    def __init__(self, out_size_dict, in_size, h_dim, masked_node_types, loss_over_all_nodes,activation=nn.ReLU()):
         '''
 
         :param out_size_dict:
         :param in_size:
         :param h_dim:
-        :param G:
         :param masked_node_types: Node types to not penalize for reconstruction
         :param activation:
         '''
@@ -80,24 +77,20 @@ class MultipleAttributeDecoder(nn.Module):
         # W_r for each node
         self.activation=activation
         self.h_dim=h_dim
-        self.G=G
         self.weight=nn.ModuleDict()
         self.masked_node_types=masked_node_types
         self.loss_over_all_nodes=loss_over_all_nodes
 
-        for name in self.G.ntypes:
+        for name in out_size_dict.keys():
             layers=[]
             layers.append(nn.Linear( in_size, self.h_dim))
             layers.append(activation)
             layers.append(nn.Linear( self.h_dim, out_size_dict[name],bias=False))
             self.weight[name]=nn.Sequential(*layers)
 
-        #self.weight = nn.ModuleDict({
-        #    name: nn.Linear( in_size, out_size_dict[name],bias=False) for name in self.G.ntypes
-        #})
 
-    def forward(self,h,masked_nodes):
-        g = self.G.local_var()
+    def forward(self,G,h,masked_nodes):
+        g = G.local_var()
         loss=0
         for i, ntype in enumerate(g.ntypes):
             g.nodes[ntype].data['x'] = h[i]

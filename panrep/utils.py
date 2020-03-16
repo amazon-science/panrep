@@ -217,16 +217,21 @@ def perturb_and_get_rank(g,embedding, w, a, etype, b, test_size, batch_size=100)
         batch_end = min(test_size, (idx + 1) * batch_size)
         batch_a = a[batch_start: batch_end]
         wbatch = torch.transpose(we.repeat(1, batch_end - batch_start),0,1)
-        emb_ar = embedding[ntype2id_dic[s]][batch_a] * wbatch
+        emb_ar = embedding[ntype2id_dic[s]][batch_a] * wbatch # S*W_e
         emb_ar = emb_ar.transpose(0, 1).unsqueeze(2)  # size: D x E x 1
         emb_c = embedding[ntype2id_dic[o]].transpose(0, 1).unsqueeze(1)  #
         # out-prod and reduce sum
+        # Positive edges against true
+        # Negative edges: Corrupt the positive
+        # edge by corrupting the head or tail node
+        # Filtered version remove edges that exist.
+
         out_prod = torch.bmm(emb_ar, emb_c)  # size D x E x V
+
         score = torch.sum(out_prod, dim=0)  # size E x V
         score = torch.sigmoid(score)
-        #Scores are very similar suspicious
-        #data loading works
-        #...
+        # TODO filter positive edges
+        #  remove the rows that correspond to positive edges
 
         target = b[batch_start: batch_end]
         ranks.append(sort_and_rank(score, target))

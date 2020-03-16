@@ -11,7 +11,7 @@ from sklearn.model_selection import StratifiedShuffleSplit
 def load_hetero_data(args):
     if args.dataset == "kaggle_shoppers":
         train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_kaggle_shoppers_data(args)
-    elif args.dataset == "wn":
+    elif args.dataset == "wn18":
         train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_wn_data(args)
     elif args.dataset == "imdb":
         train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_imdb_data(args)

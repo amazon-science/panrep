@@ -39,36 +39,36 @@ class EncoderRGCN(BaseRGCN):
 
 class EncoderRelGraphAttentionHetero(nn.Module):
     def __init__(self,
-                 G,
                  h_dim,
+                 in_size_dict,
+                 etypes,
+                 ntypes,
                  num_hidden_layers=1,
                  dropout=0,
                  use_self_loop=False):
         super(EncoderRelGraphAttentionHetero, self).__init__()
-        self.G = G
         self.h_dim = h_dim
-        self.rel_names = list(set(G.etypes))
+        self.rel_names = list(set(etypes))
         self.rel_names.sort()
         self.num_hidden_layers = num_hidden_layers
         self.dropout = dropout
 
         self.use_self_loop = use_self_loop
-        self.in_size_dict = {};
-        for name in self.G.ntypes:
-            self.in_size_dict[name] = self.G.nodes[name].data['features'].size(1);
+        self.in_size_dict = in_size_dict
 
-        self.embed_layer = EmbeddingLayer(self.in_size_dict, h_dim, G.ntypes)
+
+        self.embed_layer = EmbeddingLayer(self.in_size_dict, h_dim, ntypes)
         self.layers = nn.ModuleList()
         # h2h
         for i in range(self.num_hidden_layers):
             self.layers.append(RelGraphAttentionHetero(
-                self.h_dim, self.h_dim, self.G.etypes, activation=F.relu, self_loop=self.use_self_loop,
+                self.h_dim, self.h_dim, etypes, activation=F.relu, self_loop=self.use_self_loop,
                 dropout=self.dropout))
 
-    def forward(self, corrupt=False):
+    def forward(self,G, corrupt=False):
         if corrupt:
             # create local variable do not permute the original graph
-            g = self.G.local_var()
+            g = G.local_var()
             for key in self.in_size_dict:
                 # TODO possibly high complexity here??
                 # The following implements the permutation of features within each node class.
@@ -78,7 +78,7 @@ class EncoderRelGraphAttentionHetero(nn.Module):
 
 
         else:
-            g = self.G
+            g = G
 
         h = self.embed_layer(g)
         for layer in self.layers:
@@ -88,27 +88,26 @@ class EncoderRelGraphAttentionHetero(nn.Module):
 
 class EncoderRelGraphConvHetero(nn.Module):
     def __init__(self,
-                 G,
                  h_dim,
+                 in_size_dict,
+                 etypes,
+                 ntypes,
                  num_bases=-1,
                  num_hidden_layers=1,
                  dropout=0,
                  use_self_loop=False):
         super(EncoderRelGraphConvHetero, self).__init__()
-        self.G = G
         self.h_dim = h_dim
-        self.rel_names = list(set(G.etypes))
+        self.rel_names = list(set(etypes))
         self.rel_names.sort()
         self.num_bases = None if num_bases < 0 else num_bases
         self.num_hidden_layers = num_hidden_layers
         self.dropout = dropout
 
         self.use_self_loop = use_self_loop
-        self.in_size_dict = {};
-        for name in self.G.ntypes:
-            self.in_size_dict[name] = self.G.nodes[name].data['features'].size(1);
+        self.in_size_dict = in_size_dict
 
-        self.embed_layer = EmbeddingLayer(self.in_size_dict, h_dim, G.ntypes)
+        self.embed_layer = EmbeddingLayer(self.in_size_dict, h_dim, ntypes)
         self.layers = nn.ModuleList()
         # h2h
         for i in range(self.num_hidden_layers):
@@ -117,10 +116,10 @@ class EncoderRelGraphConvHetero(nn.Module):
                 self.num_bases, activation=F.relu, self_loop=self.use_self_loop,
                 dropout=self.dropout))
 
-    def forward(self, corrupt=False):
+    def forward(self,G, corrupt=False):
         if corrupt:
             # create local variable do not permute the original graph
-            g = self.G.local_var()
+            g = G.local_var()
             for key in self.in_size_dict:
                 # TODO possibly high complexity here??
                 # The following implements the permutation of features within each node class.
@@ -130,7 +129,7 @@ class EncoderRelGraphConvHetero(nn.Module):
 
 
         else:
-            g = self.G
+            g = G
 
         h = self.embed_layer(g)
         for layer in self.layers:

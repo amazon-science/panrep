@@ -1,14 +1,16 @@
 import torch
 import numpy as np
 import time
-def create_edge_mask(old_g,use_cude):
+def create_edge_mask(old_g,use_cuda):
     g=old_g.local_var()
     for etype in g.etypes:
-        if use_cude:
+        if use_cuda:
             g.edges[etype].data['mask']=torch.tensor(np.ones((g.number_of_edges(etype))),dtype=torch.float32).cuda()
         else:
             g.edges[etype].data['mask'] = torch.tensor(np.ones((g.number_of_edges(etype))),dtype=torch.float32)
     return g
+def unmask_edges(old_g,use_cuda):
+    return create_edge_mask(old_g,use_cuda)
 
 def negative_sampling(g,pos_samples_d,  negative_rate):
     labels_d={}

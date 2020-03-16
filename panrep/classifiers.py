@@ -53,16 +53,15 @@ class ClassifierRGCN(BaseRGCN):
         return self.build_class_output_layer()
 
 class DLinkPredictor(nn.Module):
-    def __init__(self, in_dim,out_dim, G, num_hidden_layers=1,reg_param=0,use_cuda=False):
+    def __init__(self, in_dim,out_dim, etypes,ntype2id, num_hidden_layers=1,reg_param=0,use_cuda=False):
         super(DLinkPredictor, self).__init__()
         self.reg_param = reg_param
-        self.etypes=G.etypes
-        self.G=G
+        self.etypes=etypes
         self.in_dim=in_dim
+        self.ntype2id = ntype2id
         self.w_relation={}
-        self.ntype2id={}
-        for i, ntype in enumerate(self.G.ntypes):
-            self.ntype2id[ntype] = i
+
+
         for ename in self.etypes:
             if use_cuda:
                 self.w_relation[ename] = nn.Parameter(torch.Tensor(out_dim,1)).cuda()
@@ -74,19 +73,20 @@ class DLinkPredictor(nn.Module):
         self.num_hidden_layers=num_hidden_layers
         self.layers= nn.ModuleList()
         self.layers.append(RelGraphConvHetero(
-            in_dim, out_dim, list(set(self.G.etypes)), "basis",
+            in_dim, out_dim, list(set(self.etypes)), "basis",
             num_bases=-1, activation=F.relu, self_loop=False,
             dropout=0))
         for i in range(self.num_hidden_layers-1):
             self.layers.append(RelGraphConvHetero(
-                out_dim, out_dim, list(set(self.G.etypes)), "basis",
+                out_dim, out_dim, list(set(self.etypes)), "basis",
                 num_bases=-1, activation=F.relu, self_loop=False,
                 dropout=0))
-    def calc_score(self, embedding, dict_s_d):
+    def calc_score(self,g, embedding, dict_s_d):
         # DistMult
         score={}
+
         for etype in self.etypes:
-            (stype,e,dtype)=self.G.to_canonical_etype(etype)
+            (stype,e,dtype)=g.to_canonical_etype(etype)
             s = embedding[self.ntype2id[stype]][dict_s_d[etype][:, 0]]
             r = self.w_relation[etype].squeeze()
             o = embedding[self.ntype2id[dtype]][dict_s_d[etype][:, 1]]
@@ -101,15 +101,15 @@ class DLinkPredictor(nn.Module):
             for e in self.w_relation.keys():
                 loss+=torch.mean(self.w_relation[e].pow(2))
             return loss
-    def forward(self, inp_h):
+    def forward(self, g,inp_h):
         h=inp_h
         for layer in self.layers:
-            h = layer(self.G, h)
+            h = layer(g, h)
         return h
-    def get_loss(self, embed, edict_s_d, e_dict_labels):
+    def get_loss(self,g, embed, edict_s_d, e_dict_labels):
         # triplets is a list of data samples (positive and negative)
         # each row in the triplets is a 3-tuple of (source, relation, destination)
-        score = self.calc_score(embed, edict_s_d)
+        score = self.calc_score(g,embed, edict_s_d)
         predict_loss=0
         for etype in self.etypes:
             predict_loss += F.binary_cross_entropy_with_logits(score[etype], e_dict_labels[etype])
