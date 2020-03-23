@@ -9,15 +9,14 @@ Difference compared to tkipf/relation-gcn
 """
 
 import argparse
-import numpy as np
+from edge_masking_samling import create_edge_mask
 import time
 import torch
 import torch.nn.functional as F
 from dgl import DGLGraph
 import dgl
 from classifiers import ClassifierRGCN,End2EndClassifierRGCN
-from load_data import load_kaggle_shoppers_data, load_gen_data
-from model import PanRepRGCN,PanRepRGCNHetero
+from load_data import load_hetero_data
 from sklearn.metrics import roc_auc_score
 from node_supervision_tasks import reconstruction_loss
 import os
@@ -26,11 +25,7 @@ def main(args):
     rgcn_hetero(args)
 
 def rgcn_hetero(args):
-    if args.dataset == "database_data":
-        train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_kaggle_shoppers_data(args)
-    else:
-        raise NotImplementedError
-
+    train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_hetero_data(args)
 
     category_id = len(g.ntypes)
     for i, ntype in enumerate(g.ntypes):
@@ -48,13 +43,19 @@ def rgcn_hetero(args):
 
     device = torch.device("cuda:" + str(args.gpu) if use_cuda else "cpu")
         # create model
+    in_size_dict={}
+    g = create_edge_mask(g, use_cuda)
+    for name in g.ntypes:
+        in_size_dict[name] = g.nodes[name].data['features'].size(1);
 
-    model = End2EndClassifierRGCN(G=g,
+    model = End2EndClassifierRGCN(
                            h_dim=args.n_hidden,
                            out_dim=num_classes,
                            num_rels = len(set(g.etypes)),
+                            rel_names=list(set(g.etypes)),
                            num_bases=args.n_bases,
-                           num_hidden_layers=args.n_layers - 2,
+        ntypes=g.ntypes,in_size_dict=in_size_dict,
+                           num_hidden_layers=args.n_layers - 1,
                            dropout=args.dropout,
                            use_self_loop=args.use_self_loop)
 
@@ -78,7 +79,7 @@ def rgcn_hetero(args):
 
         optimizer.zero_grad()
         t0 = time.time()
-        logits = model()[category_id]
+        logits = model(g)[category_id]
         loss = F.binary_cross_entropy_with_logits(logits[train_idx].squeeze(1),
                                                   labels[train_idx].type(torch.FloatTensor).to(device))
         loss.backward()
@@ -105,146 +106,6 @@ def rgcn_hetero(args):
     print()
 
 
-
-def rgcn(args):
-    # load graph data
-    if args.dataset=="database_data":
-        raise NotImplementedError
-    else:
-        num_nodes, num_rels, num_classes, train_idx,test_idx,\
-        val_idx,labels, feats,edge_type,edge_norm,edge_src,edge_dst= load_gen_data(args)
-
-    # edge type and normalization factor
-    edge_type = torch.from_numpy(edge_type)
-    edge_norm = torch.from_numpy(edge_norm).unsqueeze(1)
-    labels = torch.from_numpy(labels).view(-1)
-
-    # check cuda
-    use_cuda = args.gpu >= 0 and torch.cuda.is_available()
-    if use_cuda:
-        torch.cuda.set_device(args.gpu)
-        feats = feats.cuda()
-        edge_type = edge_type.cuda()
-        edge_norm = edge_norm.cuda()
-        labels = labels.cuda()
-
-    # create graph
-    g = DGLGraph()
-    g.add_nodes(num_nodes)
-    g.add_edges(edge_src, edge_dst)
-    inp_dim=len(g)
-    # create model
-    model = PanRepRGCN(len(g),
-                    args.n_hidden,
-                    inp_dim,
-                    num_classes,
-                    num_rels,
-                    num_bases=args.n_bases,
-                    num_hidden_layers=args.n_layers - 2,
-                    dropout=args.dropout,
-                    use_self_loop=args.use_self_loop,
-                    use_cuda=use_cuda)
-
-    if use_cuda:
-        model.cuda()
-
-    # optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2norm)
-
-    # training loop
-    print("start training...")
-    forward_time = []
-    backward_time = []
-    model.train()
-    for epoch in range(args.n_epochs):
-        optimizer.zero_grad()
-        t0 = time.time()
-        reconstructed_feats,embedding = model(g, feats, edge_type, edge_norm)
-        loss = reconstruction_loss(reconstructed_feats[train_idx], feats[train_idx])
-        t1 = time.time()
-        loss.backward()
-        optimizer.step()
-        t2 = time.time()
-
-        forward_time.append(t1 - t0)
-        backward_time.append(t2 - t1)
-        print("Epoch {:05d} | Train Forward Time(s) {:.4f} | Backward Time(s) {:.4f}".
-              format(epoch, forward_time[-1], backward_time[-1]))
-        #train_acc = torch.sum(reconstructed_feats[train_idx].argmax(dim=1) == feats[train_idx]).item() / len(train_idx)
-        val_loss =reconstruction_loss(reconstructed_feats[val_idx], feats[val_idx])
-        #val_acc = torch.sum(reconstructed_feats[val_idx].argmax(dim=1) == feats[val_idx]).item() / len(val_idx)
-        print("Train Loss: {:.4f} |  Validation loss: {:.4f}".
-              format(loss.item(), val_loss.item()))
-    print()
-
-    model.eval()
-    with torch.no_grad():
-        reconstructed_feats,embedding = model.forward(g, feats, edge_type, edge_norm)
-    test_loss = reconstruction_loss(reconstructed_feats[test_idx], feats[test_idx])
-    print(" Test loss: {:.4f}".format(test_loss.item()))
-    print()
-
-    print("Mean forward time: {:4f}".format(np.mean(forward_time[len(forward_time) // 4:])))
-    print("Mean backward time: {:4f}".format(np.mean(backward_time[len(backward_time) // 4:])))
-    ###
-    # Use the encoded features for classification
-    # Here we initialize the features using the reconstructed ones
-    feats=embedding
-    inp_dim=feats.shape[1]
-    model = ClassifierRGCN(len(g),
-                         args.n_hidden,
-                         inp_dim,
-                         num_classes,
-                         num_rels,
-                         num_bases=args.n_bases,
-                         num_hidden_layers=args.n_layers - 2,
-                         dropout=args.dropout,
-                         use_self_loop=args.use_self_loop,
-                         use_cuda=use_cuda)
-
-    if use_cuda:
-        model.cuda()
-
-    # optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2norm)
-
-    # training loop
-    print("start training...")
-    forward_time = []
-    backward_time = []
-    model.train()
-    for epoch in range(args.n_epochs):
-        optimizer.zero_grad()
-        t0 = time.time()
-        logits = model(g, feats, edge_type, edge_norm)
-        loss = F.cross_entropy(logits[train_idx], labels[train_idx])
-        t1 = time.time()
-        loss.backward()
-        optimizer.step()
-        t2 = time.time()
-
-        forward_time.append(t1 - t0)
-        backward_time.append(t2 - t1)
-        print("Epoch {:05d} | Train Forward Time(s) {:.4f} | Backward Time(s) {:.4f}".
-              format(epoch, forward_time[-1], backward_time[-1]))
-        train_acc = torch.sum(logits[train_idx].argmax(dim=1) == labels[train_idx]).item() / len(train_idx)
-        val_loss = F.cross_entropy(logits[val_idx], labels[val_idx])
-        val_acc = torch.sum(logits[val_idx].argmax(dim=1) == labels[val_idx]).item() / len(val_idx)
-        print("Train Accuracy: {:.4f} | Train Loss: {:.4f} | Validation Accuracy: {:.4f} | Validation loss: {:.4f}".
-              format(train_acc, loss.item(), val_acc, val_loss.item()))
-    print()
-
-    model.eval()
-    logits = model.forward(g, feats, edge_type, edge_norm)
-    test_loss = F.cross_entropy(logits[test_idx], labels[test_idx])
-    test_acc = torch.sum(logits[test_idx].argmax(dim=1) == labels[test_idx]).item() / len(test_idx)
-    print("Test Accuracy: {:.4f} | Test loss: {:.4f}".format(test_acc, test_loss.item()))
-    print()
-
-    print("Mean forward time: {:4f}".format(np.mean(forward_time[len(forward_time) // 4:])))
-    print("Mean backward time: {:4f}".format(np.mean(backward_time[len(backward_time) // 4:])))
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='RGCN')
     parser.add_argument("--dropout", type=float, default=0.3,
@@ -259,7 +120,7 @@ if __name__ == '__main__':
             help="number of filter weight matrices, default: -1 [use all]")
     parser.add_argument("--n-layers", type=int, default=4,
             help="number of propagation rounds")
-    parser.add_argument("-e", "--n-epochs", type=int, default=1000,
+    parser.add_argument("-e", "--n-epochs", type=int, default=100,
             help="number of training epochs")
     parser.add_argument("-num_masked", "--n-masked-nodes", type=int, default=1000,
                         help="number of masked nodes")
@@ -276,7 +137,7 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'database_data'])
+    args = parser.parse_args(['--dataset', 'imdb'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     main(args)

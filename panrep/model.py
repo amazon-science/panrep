@@ -61,3 +61,24 @@ class PanRepRGCNHetero(nn.Module):
             loss += link_prediction_loss
 
         return loss, positive
+
+    def forward_mb(self, masked_emb, original_emb, blocks, perm_emb,masked_nodes, sampled_links, sampled_link_labels):
+
+        #h=self.encoder(corrupt=False)
+        positive = self.encoder.forward_mb(masked_emb, blocks)
+        loss=0
+
+        if self.use_infomax_task:
+            negative = self.encoder.forward_mb(perm_emb, blocks)
+            infomax_loss = self.infomax.forward_mb(positive, negative)
+            loss += infomax_loss
+
+        if self.use_reconstruction_task:
+            reconstruct_loss = self.attributeDecoder.forward_mb(original_emb,positive,masked_nodes=masked_nodes)
+            loss += reconstruct_loss
+
+        if self.link_prediction_task:
+            link_prediction_loss=self.linkPredictor(blocks, positive, sampled_links, sampled_link_labels)
+            loss += link_prediction_loss
+
+        return loss, positive

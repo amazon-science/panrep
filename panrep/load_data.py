@@ -6,7 +6,7 @@ from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit
 import numpy as np
 import torch
 from dgl.contrib.data import load_data
-from sklearn.model_selection import StratifiedShuffleSplit
+from sklearn.model_selection import StratifiedShuffleSplit,train_test_split
 
 def load_hetero_data(args):
     if args.dataset == "kaggle_shoppers":
@@ -89,21 +89,24 @@ def load_wn_data(args):
     data_folder = "../data/kg/wn18/"
 
     # In[13]:
-
+    # graph file has 81 different node types based on the type of word (but it is unclear what it corresponds to)
+    # graph_reduced has the 4 basic node types.
     g = pickle.load(open(os.path.join(data_folder, 'graph_reduced.pickle'), "rb")).to(device)
 
     # In[14]:
     labels = g.nodes['word'].data['features'][:, -1].cpu()
-
+    g.nodes['word'].data['features']=g.nodes['word'].data['features'][:,: -1]
 
     label_indices = [i for i in range(len(labels))];
-    sss = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=seed);
-    train_idx, test_idx = next(sss.split(label_indices, labels));
+    train_idx, test_idx, y_train, y_test = train_test_split(label_indices, labels, test_size=0.2, random_state=seed)
 
-    sss = StratifiedShuffleSplit(n_splits=1, test_size=0.5, random_state=seed);
-    valid_index_temp, test_index_temp = next(sss.split(list(test_idx), np.array(labels)[test_idx]));
-    val_idx = np.array(test_idx)[valid_index_temp];
-    test_idx = np.array(test_idx)[test_index_temp];
+    #sss = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=seed);
+    #train_idx, test_idx = next(sss.split(label_indices, labels));
+    val_idx, test_idx, y_train, y_test = train_test_split(list(test_idx), np.array(labels)[test_idx], test_size=0.5, random_state=seed)
+    #sss = StratifiedShuffleSplit(n_splits=1, test_size=0.5, random_state=seed);
+    #valid_index_temp, test_index_temp = next(sss.split(list(test_idx), np.array(labels)[test_idx]));
+    #val_idx = np.array(test_idx)[valid_index_temp];
+    #test_idx = np.array(test_idx)[test_index_temp];
 
     train_idx = np.array(train_idx);
     test_idx = np.array(test_idx);
@@ -206,7 +209,7 @@ def load_imdb_data(args):
     data_folder = "../data/imdb_data/"
 
     # In[13]:
-
+    # load to cpu for very large graphs
     G = pickle.load(open(os.path.join(data_folder, 'graph_red.pickle'), "rb")).to(device)
 
     # extract adult label from graph
@@ -217,6 +220,7 @@ def load_imdb_data(args):
         (G.nodes['movie'].data['features'][:, :602], G.nodes['movie'].data['features'][:, 603:]), 1)
     elif label_type=='genre':
         # last 30 are the genre labels
+        #CHECK HOW MANY ARE THE GENRE LABELS MAYBE 28
         labels = G.nodes['movie'].data['features'][:, -30:]
         # Discard very rare classes
         s_labels=sum(labels)

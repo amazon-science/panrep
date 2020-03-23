@@ -7,7 +7,8 @@ Difference compared to tkipf/relation-gcn
 * l2norm applied to all weights
 * remove nodes that won't be touched
 """
-from node_sampling_masking import  node_masker,unmask_nodes
+from node_sampling_masking import  node_masker_mb,HeteroNeighborSampler,PanRepNeighborSampler
+
 
 import argparse
 import numpy as np
@@ -15,19 +16,52 @@ import time
 import torch
 import torch.nn.functional as F
 from dgl import DGLGraph
-import copy
+import dgl
 from classifiers import ClassifierRGCN,ClassifierMLP
 from load_data import load_hetero_data
 from model import PanRepRGCNHetero
 from sklearn.metrics import roc_auc_score
-from node_supervision_tasks import reconstruction_loss
+from torch.utils.data import DataLoader
 from edge_masking_samling import hetero_edge_masker_sampler,create_edge_mask,unmask_edges
 from encoders import EncoderRelGraphConvHetero,EncoderRelGraphAttentionHetero
 
-def main(args):
-    rgcn_hetero(args)
 
-def rgcn_hetero(args):
+def extract_embed(node_embed, block, permute=False):
+    emb = {}
+    for ntype in block.srctypes:
+        nid = block.srcnodes[ntype].data[dgl.NID]
+        if permute:
+            perm = torch.randperm(node_embed[ntype].shape[0])
+            emb[ntype] = node_embed[ntype][perm][nid]
+        else:
+            emb[ntype] = node_embed[ntype][nid]
+    return emb
+def extract_perm_embed(node_embed, block, use_infomax_loss=False):
+    if use_infomax_loss:
+                perm_emb = extract_embed(node_embed, block, permute=True)
+    else:
+                perm_emb={}
+    return perm_emb
+def extract_dst_embed(node_embed, seeds):
+    emb = {}
+    for ntype in seeds:
+        nid = seeds[ntype]
+        emb[ntype] = node_embed[ntype][nid,:]
+    return emb
+
+def evaluate(model, seeds, blocks, node_embed, labels, category, use_cuda):
+    model.eval()
+    emb = extract_embed(node_embed, blocks[0])
+    lbl = labels[seeds]
+    if use_cuda:
+        emb = {k : e.cuda() for k, e in emb.items()}
+        lbl = lbl.cuda()
+    logits = model(emb, blocks)[category]
+    loss = F.cross_entropy(logits, lbl)
+    acc = torch.sum(logits.argmax(dim=1) == lbl).item() / len(seeds)
+    return loss, acc
+
+def main(args):
     train_idx, test_idx, val_idx, labels, g, category, num_classes, masked_node_types=\
         load_hetero_data(args)
 
@@ -44,7 +78,8 @@ def rgcn_hetero(args):
         labels = labels.cuda()
         #train_idx = train_idx.cuda()
         #test_idx = test_idx.cuda()
-
+    # Cast g to cpu
+    g=g.to(torch.device("cpu"))
 
     device = torch.device("cuda:" + str(args.gpu) if use_cuda else "cpu")
         # create model
@@ -74,7 +109,7 @@ def rgcn_hetero(args):
                                   in_size_dict=in_size_dict,
                                           etypes=g.etypes,
                                         ntypes=g.ntypes,
-                                  num_hidden_layers=args.n_layers - 2,
+                                  num_hidden_layers=args.n_layers - 1,
                                   dropout=args.dropout,
                                   use_self_loop=args.use_self_loop)
     elif args.encoder=='RGAT':
@@ -83,7 +118,7 @@ def rgcn_hetero(args):
                                             in_size_dict=in_size_dict,
                                             etypes=g.etypes,
                                             ntypes=g.ntypes,
-                                            num_hidden_layers=args.n_layers - 2,
+                                            num_hidden_layers=args.n_layers - 1,
                                             dropout=args.dropout,
                                             use_self_loop=args.use_self_loop)
 
@@ -93,7 +128,7 @@ def rgcn_hetero(args):
                              etypes=g.etypes,
                              encoder=encoder,
                              ntype2id=ntype2id,
-                             num_hidden_layers=args.n_layers - 2,
+                             num_hidden_layers=args.n_layers - 1,
                              dropout=args.dropout,
                              in_size_dict=in_size_dict,
                              masked_node_types=masked_node_types,
@@ -105,9 +140,32 @@ def rgcn_hetero(args):
 
     if use_cuda:
         model.cuda()
+    node_embed={}
+    for ntype in g.ntypes:
+       node_embed[ntype]=g.nodes[ntype].data['features']
+
+
+    if len(labels.shape)>1:
+        zero_rows=np.where(~(labels).cpu().numpy().any(axis=1))[0]
+
+        train_idx=np.array(list(set(train_idx).difference(set(zero_rows))))
+        val_idx = np.array(list(set(val_idx).difference(set(zero_rows))))
+        test_idx = np.array(list(set(test_idx).difference(set(zero_rows))))
+
+
+    hetero_dataset={}
+    for ntype in g.ntypes:
+        hetero_dataset[ntype]=list(np.arange(g.number_of_nodes(ntype)))
+
+    sampler = PanRepNeighborSampler(g, [args.fanout] * (args.n_layers-1),full_neighbor=True)
+    loader = DataLoader(dataset=list(np.arange(sampler.number_of_nodes)),
+                        batch_size=args.batch_size,
+                        collate_fn=sampler.sample_blocks,
+                        shuffle=True,
+                        num_workers=0)
+
 
     # optimizer
-
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2norm)
 
     # training loop
@@ -119,52 +177,62 @@ def rgcn_hetero(args):
     un_mas_time=[]
     model.train()
     # This creates an all 1 mask for link prediction needed by the current implementation
-    ng=create_edge_mask(g,use_cuda)
-    # keep a reference to previous graph?
-    g = ng
-    # TODO debug link prediction. why forward and backward slow when masking links
-    for epoch in range(args.n_epochs):
-        t_nm_0 = time.time()
-        masked_nodes,g = node_masker(g, num_nodes=num_masked_nodes, masked_node_types=masked_node_types,node_masking=node_masking,
-                                     use_reconstruction_loss=use_reconstruction_loss)
+    g=create_edge_mask(g,use_cuda)
 
-        t_nm_1 = time.time()
-        t_lm_0 = time.time()
-        if link_prediction:
-            g,samples_d,llabels_d=hetero_edge_masker_sampler(g, pct_masked_edges, negative_rate, mask_links)
-        else:
-            # TODO check that the new_g deletes old masked edges, nodes.
-            samples_d = {}
-            llabels_d = {}
-        t_lm_1 = time.time()
+    for epoch in range(args.n_epochs):
+
 
         optimizer.zero_grad()
-        t0 = time.time()
-        loss, embeddings = model(g=g,masked_nodes=masked_nodes,sampled_links=samples_d,sampled_link_labels=llabels_d)
-        t1 = time.time()
-        loss.backward()
-        optimizer.step()
-        t2 = time.time()
-        t_unmask0=time.time()
-        if node_masking and use_reconstruction_loss:
-            g=unmask_nodes(g, masked_node_types)
-        if link_prediction:
-            g=unmask_edges(g,use_cuda)
-        t_unmask1 = time.time()
-        forward_time.append(t1 - t0)
-        backward_time.append(t2 - t1)
-        lm_time.append(t_lm_1-t_lm_0)
-        nm_time.append(t_nm_1-t_nm_0)
-        un_mas_time.append(t_unmask1 - t_unmask0)
-        print("Epoch {:05d} | Train Forward Time(s) {:.4f} | Backward Time(s) {:.4f} | Link masking Time(s) {:.4f} | "
-              "Node masking Time(s) {:.4f} | Un masking time  {:.4f}".
-              format(epoch, forward_time[-1], backward_time[-1],lm_time[-1],nm_time[-1],un_mas_time[-1]))
-        print("Train Loss: {:.4f}".
+        for i, (seeds, blocks) in enumerate(loader):
+            emb_to_reconstruct = extract_dst_embed(node_embed,seeds)
+
+            emb = extract_embed(node_embed, blocks[0], permute=False)
+
+            perm_emb = extract_perm_embed(node_embed, blocks[0], use_infomax_loss=use_infomax_loss)
+
+            # TODO embedding to be masked must have only the target nodes
+            masked_nodes, masked_emb= node_masker_mb(emb, num_masked_nodes, masked_node_types,node_masking)
+
+            if link_prediction:
+                g, samples_d, llabels_d = hetero_edge_masker_sampler(g, pct_masked_edges, negative_rate, mask_links)
+            else:
+                # TODO check that the new_g deletes old masked edges, nodes.
+                samples_d = {}
+                llabels_d = {}
+
+            if use_cuda:
+                emb_to_reconstruct = {k: e.cuda() for k, e in emb_to_reconstruct.items()}
+                masked_emb = {k: e.cuda() for k, e in masked_emb.items()}
+                perm_emb={k: e.cuda() for k, e in perm_emb.items()}
+
+            loss, embeddings = model.forward_mb(masked_emb=masked_emb, original_emb=emb_to_reconstruct,
+                                                perm_emb=perm_emb, blocks=blocks,
+                                                masked_nodes=masked_nodes, sampled_links=samples_d,
+                                                sampled_link_labels=llabels_d)
+            loss.backward()
+            optimizer.step()
+#            if node_masking and use_reconstruction_loss:
+#                g=unmask_nodes(g, masked_node_types)
+            if link_prediction:
+                g=unmask_edges(g,use_cuda)
+
+            #print("Epoch {:05d} | Train Forward Time(s) {:.4f} | Backward Time(s) {:.4f} | Link masking Time(s) {:.4f} | "
+            #  "Node masking Time(s) {:.4f} | Un masking time  {:.4f}".
+            #  format(epoch, forward_time[-1], backward_time[-1],lm_time[-1],nm_time[-1],un_mas_time[-1]))
+            print("Train Loss: {:.4f}".
               format(loss.item()))
+            print(
+                "Epoch {:05d} | Batch {:03d}".# | Train Acc: {:.4f} |Train Acc AUC: {:.4f}| Train Loss: {:.4f} | Time: {:.4f}".
+                format(epoch, i))#, train_acc, train_acc_auc, loss.item(), time.time() - batch_tic))
 
-    print()
-
+        print()
+    # full graph evaluation here
     model.eval()
+    if use_cuda:
+        model.cpu()
+        model.encoder.cpu()
+        for etype in g.etypes:
+            g.edges[etype].data['mask'] = g.edges[etype].data['mask'].cpu()
     with torch.no_grad():
         embeddings = model.encoder.forward(g)
 
@@ -176,12 +244,13 @@ def rgcn_hetero(args):
     # Use the encoded features for classification
     # Here we initialize the features using the reconstructed ones
     feats = embeddings[category_id]
-    #feats = g.nodes[category].data['features']
+    # feats = g.nodes[category].data['features']
     inp_dim = feats.shape[1]
     model = ClassifierMLP(input_size=inp_dim, hidden_size=args.n_hidden,out_size=num_classes)
 
     if use_cuda:
         model.cuda()
+        feats=feats.cuda()
 
     # optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2norm)
@@ -249,21 +318,21 @@ if __name__ == '__main__':
             help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=60,
             help="number of hidden units") # use 16, 2 for debug
-    parser.add_argument("--gpu", type=int, default=2,
+    parser.add_argument("--gpu", type=int, default=0,
             help="gpu")
     parser.add_argument("--lr", type=float, default=1e-2,
             help="learning rate")
     parser.add_argument("--n-bases", type=int, default=20,
             help="number of filter weight matrices, default: -1 [use all]")
-    parser.add_argument("--n-layers", type=int, default=4,
+    parser.add_argument("--n-layers", type=int, default=3,
             help="number of propagation rounds")
-    parser.add_argument("-e", "--n-epochs", type=int, default=300,
+    parser.add_argument("-e", "--n-epochs", type=int, default=50,
             help="number of training epochs for decoder")
     parser.add_argument("-ec", "--n-cepochs", type=int, default=400,
                         help="number of training epochs for classification")
-    parser.add_argument("-num_masked", "--n-masked-nodes", type=int, default=200,
+    parser.add_argument("-num_masked", "--n-masked-nodes", type=int, default=100,
                         help="number of masked nodes")
-    parser.add_argument("-num_masked_links", "--pct-masked-links", type=int, default=0.5,
+    parser.add_argument("-pct_masked_links", "--pct-masked-links", type=int, default=0.5,
                         help="number of masked links")
     parser.add_argument("-negative_rate", "--negative-rate", type=int, default=4,
                         help="number of negative examples per masked link")
@@ -291,6 +360,13 @@ if __name__ == '__main__':
                        help="use link prediction as supervision task")
     parser.add_argument("--mask-links", default=True, action='store_true',
                        help="mask the links to be predicted")
+
+    parser.add_argument("--batch-size", type=int, default=100,
+            help="Mini-batch size. If -1, use full graph training.")
+    parser.add_argument("--model_path", type=str, default=None,
+            help='path for save the model')
+    parser.add_argument("--fanout", type=int, default=10,
+            help="Fan-out of neighbor sampling.")
 
     fp = parser.add_mutually_exclusive_group(required=False)
     fp.add_argument('--validation', dest='validation', action='store_true')

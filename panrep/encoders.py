@@ -135,3 +135,9 @@ class EncoderRelGraphConvHetero(nn.Module):
         for layer in self.layers:
             h = layer(g, h)
         return h
+    def forward_mb(self, embedding,blocks):
+
+        h = self.embed_layer.forward_mb(embedding)
+        for layer, block in zip(self.layers, blocks):
+            h = layer.forward_mb(block, h)
+        return h

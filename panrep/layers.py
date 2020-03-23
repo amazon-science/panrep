@@ -114,6 +114,7 @@ class RelGraphConvHetero(nn.Module):
             # TODO check that the masking step works
             g.nodes[srctype].data['h%d' % i] = torch.matmul(
                 g.nodes[srctype].data['x'], ws[etype])# g.edges[etype].data['mask'])
+            # TODO use sum instead of mean
             funcs[(srctype, etype, dsttype)] = (fn.u_mul_e('h%d' % i, 'mask', 'm'), fn.mean('m', 'h'))
             # TODO check the masked 1 with without mask that returns the same
             #funcs[(srctype, etype, dsttype)] = (fn.copy_u('h%d' % i, 'm'), fn.mean('m', 'h'))
@@ -136,6 +137,52 @@ class RelGraphConvHetero(nn.Module):
         return hs
 
 
+    def forward_mb(self, g, xs):
+        """Forward computation
+        Parameters
+        ----------
+        g : DGLHeteroGraph
+            Input block graph.
+        xs : dict[str, torch.Tensor]
+            Node feature for each node type.
+        Returns
+        -------
+        list of torch.Tensor
+            New node features for each node type.
+        """
+        g = g.local_var()
+        for ntype, x in xs.items():
+            g.srcnodes[ntype].data['x'] = x
+
+        ws = self.basis_weight()
+        funcs = {}
+        for i, (srctype, etype, dsttype) in enumerate(g.canonical_etypes):
+                if srctype not in xs:
+                    continue
+                g.srcnodes[srctype].data['h%d' % i] = torch.matmul(
+                    g.srcnodes[srctype].data['x'], ws[etype])
+                funcs[(srctype, etype, dsttype)] = (fn.copy_u('h%d' % i, 'm'), fn.mean('m', 'h'))
+        # message passing
+        g.multi_update_all(funcs, 'sum')
+
+        hs = {}
+        for ntype in g.dsttypes:
+            if 'h' in g.dstnodes[ntype].data:
+                hs[ntype] = g.dstnodes[ntype].data['h']
+        def _apply(h):
+            # apply bias and activation
+            if self.self_loop:
+                h = h + torch.matmul(xs[ntype], self.loop_weight)
+            if self.bias:
+                h = h + self.h_bias
+            if self.activation:
+                h = self.activation(h)
+            h = self.dropout(h)
+            return h
+        hs = {ntype : _apply(h) for ntype, h in hs.items()}
+        return hs
+
+
 class EmbeddingLayer(nn.Module):
     def __init__(self, in_size_dict, out_size, ntypes):
         super(EmbeddingLayer, self).__init__()
@@ -149,7 +196,12 @@ class EmbeddingLayer(nn.Module):
             G.apply_nodes(lambda nodes: {'h': self.weight[name](nodes.data['features'])}, ntype=name);
         hs = [G.nodes[ntype].data['h'] for ntype in G.ntypes]
         return hs
-
+    def forward_mb(self, embeddings):
+        # TODO implement this layer
+        hs={}
+        for ntype in self.weight:
+            hs[ntype]=self.weight[ntype](embeddings[ntype])
+        return hs
 
 class RelGraphAttentionHetero(nn.Module):
     def __init__(self, in_feat, out_feat, etypes, bias=True, activation = None,

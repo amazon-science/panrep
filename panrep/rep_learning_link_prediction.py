@@ -7,7 +7,7 @@ Difference compared to tkipf/relation-gcn
 * l2norm applied to all weights
 * remove nodes that won't be touched
 """
-from node_masking import  node_masker,unmask_nodes
+from node_sampling_masking import  node_masker,unmask_nodes
 
 import argparse
 import numpy as np
@@ -21,7 +21,7 @@ from load_data import load_kaggle_shoppers_data, load_wn_data,load_imdb_data,loa
 from model import PanRepRGCNHetero
 import utils
 from classifiers import DLinkPredictor as DownstreamLinkPredictor
-from edge_samling import hetero_edge_masker_sampler,create_edge_mask,negative_sampling,unmask_edges
+from edge_masking_samling import hetero_edge_masker_sampler,create_edge_mask,negative_sampling,unmask_edges
 from encoders import EncoderRelGraphConvHetero,EncoderRelGraphAttentionHetero
 import os
 def main(args):
@@ -47,14 +47,7 @@ def rgcn_hetero(args):
     use_cuda = args.gpu >= 0 and torch.cuda.is_available()
     if use_cuda:
         torch.cuda.set_device(args.gpu)
-        # labels = labels.cuda()
-        # train_idx = train_idx.cuda()
-        # test_idx = test_idx.cuda()
 
-
-    device = torch.device("cuda:" + str(args.gpu) if use_cuda else "cpu")
-        # create model
-    #dgl.contrib.sampling.sampler.EdgeSampler(g['customer_to_transaction'], batch_size=100)
     use_reconstruction_loss = args.use_reconstruction_loss
     use_infomax_loss = args.use_infomax_loss
     num_masked_nodes = args.n_masked_nodes
@@ -64,7 +57,6 @@ def rgcn_hetero(args):
     loss_over_all_nodes = args.loss_over_all_nodes
     num_sampled_edges = args.n_masked_links
     negative_rate = args.negative_rate
-    #g.adjacency_matrix(transpose=True,scipy_fmt='coo',etype='customer_to_transaction')
 
 
 
@@ -145,13 +137,8 @@ def rgcn_hetero(args):
         t_lm_0 = time.time()
         if link_prediction:
             g, samples_d, llabels_d = hetero_edge_masker_sampler(g, num_sampled_edges, negative_rate,
-                                                                     mask_links)
-            link_labels_d = {}
-            for e in llabels_d.keys():
-                link_labels_d[e] = torch.from_numpy(llabels_d[e])
-                if use_cuda:
-                    link_labels_d[e] = link_labels_d[e].cuda()
-            llabels_d = link_labels_d
+                                                                     mask_links,use_cuda)
+
         else:
             # TODO check that the g deletes old masked edges, nodes.
             samples_d = {}
@@ -214,9 +201,8 @@ def rgcn_hetero(args):
             for i in range(len(embeddings)):
                 embeddings[i] = embeddings[i].cuda()
     model = DownstreamLinkPredictor(in_dim=inp_dim,
-                                    out_dim=inp_dim, use_cuda=use_cuda,
-                                    ntype2id=ntype2id,
-                                    etypes=g.etypes,num_hidden_layers=nbr_downstream_layers)
+                                    out_dim=inp_dim, etypes=g.etypes,use_cuda=use_cuda,
+                                    ntype2id=ntype2id,num_hidden_layers=nbr_downstream_layers)
 
     if use_cuda:
         model.cuda()

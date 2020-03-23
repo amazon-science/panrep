@@ -63,7 +63,7 @@ class AttributeDecoder(nn.Module):
         h=self.reconstruction_layer(h)
         return h
 class MultipleAttributeDecoder(nn.Module):
-    def __init__(self, out_size_dict, in_size, h_dim, masked_node_types, loss_over_all_nodes,activation=nn.ReLU()):
+    def __init__(self, out_size_dict, in_size, h_dim, masked_node_types, loss_over_all_nodes,activation=nn.ReLU(),single_layer=False):
         '''
 
         :param out_size_dict:
@@ -80,12 +80,16 @@ class MultipleAttributeDecoder(nn.Module):
         self.weight=nn.ModuleDict()
         self.masked_node_types=masked_node_types
         self.loss_over_all_nodes=loss_over_all_nodes
+        self.single_layer=single_layer
 
         for name in out_size_dict.keys():
             layers=[]
-            layers.append(nn.Linear( in_size, self.h_dim))
-            layers.append(activation)
-            layers.append(nn.Linear( self.h_dim, out_size_dict[name],bias=False))
+            if self.single_layer:
+                layers.append(nn.Linear( in_size,  out_size_dict[name],bias=False))
+            else:
+                layers.append(nn.Linear( in_size, self.h_dim))
+                layers.append(activation)
+                layers.append(nn.Linear( self.h_dim, out_size_dict[name],bias=False))
             self.weight[name]=nn.Sequential(*layers)
 
 
@@ -107,6 +111,26 @@ class MultipleAttributeDecoder(nn.Module):
                 else:
                     loss += F.mse_loss(g.nodes[name].data['h'],
                                        g.nodes[name].data['features'])
+        #hs = [g.nodes[ntype].data['h'] for ntype in g.ntypes]
+
+        return loss
+
+    def forward_mb(self, original_feature, h, masked_nodes):
+        node_embed=h
+        loss=0
+
+        for name in self.weight:
+            if name not in self.masked_node_types:
+                print(node_embed)
+                reconstructed=self.weight[name](node_embed[name])
+                if bool(masked_nodes):
+                    if not self.loss_over_all_nodes:
+                        loss+=F.mse_loss(reconstructed[masked_nodes[name]], original_feature[masked_nodes[name]])
+                    else:
+                        loss += F.mse_loss(reconstructed, original_feature[name])
+
+                else:
+                    loss += F.mse_loss(reconstructed, original_feature[name])
         #hs = [g.nodes[ntype].data['h'] for ntype in g.ntypes]
 
         return loss
@@ -155,4 +179,21 @@ class MutualInformationDiscriminator(nn.Module):
 
             l1 += self.loss(positive, torch.ones_like(positive))
             l2 += self.loss(negative, torch.zeros_like(negative))
+        return l1+l2
+
+    def forward_mb(self, positives, negatives):
+        l1=0
+        l2=0
+        # TODO summary per node type or across all node types? for infomax
+
+        for ntype in positives.keys():
+                positive=positives[ntype]
+                negative=negatives[ntype]
+                summary = torch.sigmoid(positive.mean(dim=0))
+
+                positive = self.discriminator(positive, summary)
+                negative = self.discriminator(negative, summary)
+
+                l1 += self.loss(positive, torch.ones_like(positive))
+                l2 += self.loss(negative, torch.zeros_like(negative))
         return l1+l2
