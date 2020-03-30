@@ -2,7 +2,7 @@ import os
 import pickle
 import random
 from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit
-
+import dgl
 import numpy as np
 import torch
 from dgl.contrib.data import load_data
@@ -21,11 +21,12 @@ def load_hetero_data(args):
 
 
 def load_link_pred_wn_data(args):
-    def triplets_to_dict(edges):
+    def triplets_to_dict(edges,etype_to_canonical):
         d_e={}
         s,e,d=edges
         for sou,edg,dest in zip(s,e,d):
             edg =str(edg)
+            edg=etype_to_canonical[edg]
             if edg not in d_e:
                 d_e[edg]=[(sou,dest)]
             else:
@@ -57,13 +58,40 @@ def load_link_pred_wn_data(args):
 
     g = pickle.load(open(os.path.join(data_folder, 'graph_reduced.pickle'), "rb")).to(device)
     link_pred_splits=pickle.load(open(os.path.join(data_folder, 'link_pred_splits.pickle'), "rb"))#.to(device)
+    num_nodes_per_types={}
+    for ntype in g.ntypes:
+        num_nodes_per_types[ntype]=g.number_of_nodes(ntype)
     # In[14]:
-    train_edges=triplets_to_dict(link_pred_splits['tr'])
-    test_edges = triplets_to_dict(link_pred_splits['test'])
-    valid_edges =triplets_to_dict( link_pred_splits['val'])
+    etype_to_canonical={}
+    for i, etype in enumerate(g.etypes):
+        etype_to_canonical[etype]=g.canonical_etypes[i]
+
+    train_edges=triplets_to_dict(link_pred_splits['tr'],etype_to_canonical)
+    test_edges = triplets_to_dict(link_pred_splits['test'],etype_to_canonical)
+    valid_edges =triplets_to_dict( link_pred_splits['val'],etype_to_canonical)
+    train_g=dgl.heterograph(train_edges,num_nodes_per_types)
+    valid_g = dgl.heterograph(valid_edges, num_nodes_per_types)
+    test_g = dgl.heterograph(test_edges, num_nodes_per_types)
+    # remove last feature
+    g.nodes[ntype].data['features']=g.nodes[ntype].data['features'][:,:-1]
+    use_feats=True
+    if use_feats:
+        for ntype in g.ntypes:
+            if g.nodes[ntype].data.get("features", None) is not None:
+                train_g.nodes[ntype].data['h_f'] = g.nodes[ntype].data['features']
+                valid_g.nodes[ntype].data['h_f'] = g.nodes[ntype].data['features']
+                test_g.nodes[ntype].data['h_f'] = g.nodes[ntype].data['features']
+    # Create the train, valid, test graphs
+    for e in train_edges.keys():
+        train_edges[e]=torch.tensor(train_edges[e]).long().transpose(1,0)
+    for e in valid_edges.keys():
+        valid_edges[e]=torch.tensor(valid_edges[e]).long().transpose(1,0)
+    for e in test_edges.keys():
+        test_edges[e]=torch.tensor(test_edges[e]).long().transpose(1,0)
+
     featless_node_types=[]
 
-    return train_edges, test_edges, valid_edges, g, featless_node_types
+    return train_edges, test_edges, valid_edges, train_g,valid_g,test_g, featless_node_types
 
 def load_wn_data(args):
     use_cuda = args.gpu
@@ -113,6 +141,9 @@ def load_wn_data(args):
     val_idx = np.array(val_idx);
     category='word'
     num_classes=4
+    for ntype in g.ntypes:
+        if g.nodes[ntype].data.get("features", None) is not None:
+            g.nodes[ntype].data['h_f'] = g.nodes[ntype].data['features']
     featless_node_types = []
     if num_classes>1:
         labels_n = torch.zeros((np.shape(labels)[0], num_classes))
@@ -181,6 +212,9 @@ def load_kaggle_shoppers_data(args):
     train_idx = np.array(train_idx);
     test_idx = np.array(test_idx);
     val_idx = np.array(val_idx);
+    for ntype in G.ntypes:
+        if G.nodes[ntype].data.get("features", None) is not None:
+            G.nodes[ntype].data['h_f'] = G.nodes[ntype].data['features']
     category='history'
     num_classes=1
     featless_node_types = ['brand', 'customer', 'chain', 'market', 'dept', 'category', 'company']
@@ -262,6 +296,9 @@ def load_imdb_data(args):
     test_idx = np.array(test_idx)
     val_idx = np.array(val_idx)
     category='movie'
+    for ntype in G.ntypes:
+        if G.nodes[ntype].data.get("features", None) is not None:
+            G.nodes[ntype].data['h_f'] = G.nodes[ntype].data['features']
     num_classes=labels.shape[1]
     featless_node_types = []
     return train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types

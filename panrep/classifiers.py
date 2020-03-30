@@ -3,7 +3,7 @@ from dgl.nn.pytorch import RelGraphConv
 from functools import partial
 import torch
 import torch.nn as nn
-from layers import RelGraphConvHetero, EmbeddingLayer
+from layers import RelGraphConvHetero, EmbeddingLayer,MiniBatchRelGraphConvHetero,MiniBatchRelGraphEmbed
 import torch.nn.functional as F
 
 
@@ -119,6 +119,116 @@ class DLinkPredictor(nn.Module):
         reg_loss = self.regularization_loss(embed)
 
         return predict_loss + self.reg_param * reg_loss
+
+
+class DLinkPredictorMB(nn.Module):
+    def __init__(self,
+                 g,
+                 device,
+                 h_dim,
+                 num_rels,
+                 num_bases=-1,
+                 num_hidden_layers=1,
+                 dropout=0,
+                 use_self_loop=False,
+                 regularization_coef=0):
+        super(DLinkPredictorMB, self).__init__()
+        self.g = g
+        self.device = device
+        self.h_dim = h_dim
+
+        self.rel_names = list(set(g.etypes))
+        self.rel_names.sort()
+        self.num_bases = None if num_bases < 0 else num_bases
+        self.num_hidden_layers = num_hidden_layers
+        self.dropout = dropout
+        self.use_self_loop = use_self_loop
+        self.regularization_coef = regularization_coef
+
+        self.embed_layer = MiniBatchRelGraphEmbed(self.g, self.device, h_dim)
+        self.w_relation = nn.Parameter(torch.Tensor(num_rels, h_dim).to(self.device))
+        nn.init.xavier_uniform_(self.w_relation)
+
+        self.layers = nn.ModuleList()
+        # i2h
+        self.layers.append(MiniBatchRelGraphConvHetero(
+            self.h_dim, self.h_dim, self.rel_names, "basis",
+            self.num_bases, activation=F.relu, self_loop=self.use_self_loop,
+            use_weight=False, dropout=self.dropout))
+        # h2h
+        for i in range(self.num_hidden_layers):
+            self.layers.append(MiniBatchRelGraphConvHetero(
+                self.h_dim, self.h_dim, self.rel_names, "basis",
+                self.num_bases, activation=F.relu, self_loop=self.use_self_loop,
+                dropout=self.dropout))
+        self.layers.to(self.device)
+
+    def forward(self, p_blocks, n_blocks):
+        p_h = self.embed_layer(p_blocks[0])
+        n_h = self.embed_layer(n_blocks[0])
+
+        for layer, block in zip(self.layers, p_blocks):
+            p_h = layer(block, p_h)
+        for layer, block in zip(self.layers, n_blocks):
+            n_h = layer(block, n_h)
+
+        return p_h, n_h
+
+    def regularization_loss(self, h_emb, t_emb, nh_emb, nt_emb):
+        return torch.mean(h_emb.pow(2)) + \
+               torch.mean(t_emb.pow(2)) + \
+               torch.mean(nh_emb.pow(2)) + \
+               torch.mean(nt_emb.pow(2)) + \
+               torch.mean(self.w_relation.pow(2))
+
+    def calc_pos_score(self, h_emb, t_emb, rids):
+        # DistMult
+        r = self.w_relation[rids]
+        score = torch.sum(h_emb * r * t_emb, dim=-1)
+        return score
+
+    def calc_neg_tail_score(self, heads, tails, rids, num_chunks, chunk_size, neg_sample_size):
+        hidden_dim = heads.shape[1]
+        r = self.w_relation[rids]
+        tails = tails.reshape(num_chunks, neg_sample_size, hidden_dim)
+        tails = torch.transpose(tails, 1, 2)
+        tmp = (heads * r).reshape(num_chunks, chunk_size, hidden_dim)
+        return torch.bmm(tmp, tails)
+
+    def calc_neg_head_score(self, heads, tails, rids, num_chunks, chunk_size, neg_sample_size):
+        hidden_dim = tails.shape[1]
+        r = self.w_relation[rids]
+        heads = heads.reshape(num_chunks, neg_sample_size, hidden_dim)
+        heads = torch.transpose(heads, 1, 2)
+        tmp = (tails * r).reshape(num_chunks, chunk_size, hidden_dim)
+        return torch.bmm(tmp, heads)
+
+    def get_loss(self, h_emb, t_emb, nh_emb, nt_emb, rids, num_chunks, chunk_size, neg_sample_size):
+        # triplets is a list of data samples (positive and negative)
+        # each row in the triplets is a 3-tuple of (source, relation, destination)
+        pos_score = self.calc_pos_score(h_emb, t_emb, rids)
+        t_neg_score = self.calc_neg_tail_score(h_emb, nt_emb, rids, num_chunks, chunk_size, neg_sample_size)
+        h_neg_score = self.calc_neg_head_score(nh_emb, t_emb, rids, num_chunks, chunk_size, neg_sample_size)
+        pos_score = F.logsigmoid(pos_score)
+        h_neg_score = h_neg_score.reshape(-1, neg_sample_size)
+        t_neg_score = t_neg_score.reshape(-1, neg_sample_size)
+        h_neg_score = F.logsigmoid(-h_neg_score).mean(dim=1)
+        t_neg_score = F.logsigmoid(-t_neg_score).mean(dim=1)
+
+        pos_score = pos_score.mean()
+        h_neg_score = h_neg_score.mean()
+        t_neg_score = t_neg_score.mean()
+        predict_loss = -(2 * pos_score + h_neg_score + t_neg_score)
+
+        reg_loss = self.regularization_loss(h_emb, t_emb, nh_emb, nt_emb)
+
+        print("pos loss {}, neg loss {}|{}, reg_loss {}".format(pos_score.detach(),
+                                                                h_neg_score.detach(),
+                                                                t_neg_score.detach(),
+                                                                self.regularization_coef * reg_loss.detach()))
+        return predict_loss + self.regularization_coef * reg_loss
+
+
 class End2EndClassifierRGCN(nn.Module):
     def __init__(self, h_dim, out_dim, num_rels,rel_names, num_bases,in_size_dict,ntypes,
                  num_hidden_layers=1, dropout=0,

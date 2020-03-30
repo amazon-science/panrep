@@ -121,7 +121,7 @@ class MultipleAttributeDecoder(nn.Module):
 
         for name in self.weight:
             if name not in self.masked_node_types:
-                print(node_embed)
+
                 reconstructed=self.weight[name](node_embed[name])
                 if bool(masked_nodes):
                     if not self.loss_over_all_nodes:
@@ -163,23 +163,36 @@ class Discriminator(nn.Module):
 
 class MutualInformationDiscriminator(nn.Module):
     # returns the MI loss function follows the dgl implementation
-    def __init__(self, n_hidden):
+    def __init__(self, n_hidden,average_across_node_types=False):
         super(MutualInformationDiscriminator, self).__init__()
         self.discriminator = Discriminator(n_hidden)
         self.loss = nn.BCEWithLogitsLoss()
+        self.average_across_node_types=average_across_node_types
+        # keep a global summary
+        #self.positives
+
 
     def forward(self, positives, negatives):
         l1=0
         l2=0
-        for positive,negative in zip(positives,negatives):
-            summary = torch.sigmoid(positive.mean(dim=0))
-
-            positive = self.discriminator(positive, summary)
-            negative = self.discriminator(negative, summary)
-
+        if self.average_across_node_types:
+            summary = torch.sigmoid(positives.mean(dim=0))
+            positive = self.discriminator(positives.mean(dim=0), summary)
+            negative = self.discriminator(negatives.mean(dim=0), summary)
             l1 += self.loss(positive, torch.ones_like(positive))
             l2 += self.loss(negative, torch.zeros_like(negative))
-        return l1+l2
+
+            return l1 + l2
+        else:
+            for positive,negative in zip(positives,negatives):
+                summary = torch.sigmoid(positive.mean(dim=0))
+
+                positive = self.discriminator(positive, summary)
+                negative = self.discriminator(negative, summary)
+
+                l1 += self.loss(positive, torch.ones_like(positive))
+                l2 += self.loss(negative, torch.zeros_like(negative))
+            return l1+l2
 
     def forward_mb(self, positives, negatives):
         l1=0

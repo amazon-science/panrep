@@ -74,7 +74,7 @@ def rgcn_hetero(args):
                                   in_size_dict=in_size_dict,
                                           etypes=g.etypes,
                                         ntypes=g.ntypes,
-                                  num_hidden_layers=args.n_layers - 2,
+                                  num_hidden_layers=args.n_layers - 1,
                                   dropout=args.dropout,
                                   use_self_loop=args.use_self_loop)
     elif args.encoder=='RGAT':
@@ -83,7 +83,7 @@ def rgcn_hetero(args):
                                             in_size_dict=in_size_dict,
                                             etypes=g.etypes,
                                             ntypes=g.ntypes,
-                                            num_hidden_layers=args.n_layers - 2,
+                                            num_hidden_layers=args.n_layers - 1,
                                             dropout=args.dropout,
                                             use_self_loop=args.use_self_loop)
 
@@ -93,7 +93,7 @@ def rgcn_hetero(args):
                              etypes=g.etypes,
                              encoder=encoder,
                              ntype2id=ntype2id,
-                             num_hidden_layers=args.n_layers - 2,
+                             num_hidden_layers=args.n_layers - 1,
                              dropout=args.dropout,
                              in_size_dict=in_size_dict,
                              masked_node_types=masked_node_types,
@@ -297,7 +297,7 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'imdb','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'wn18','--encoder', 'RGCN'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     main(args)

@@ -11,6 +11,9 @@
       <sourceFolder url="file://$MODULE_DIR$/data_handler" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/aux_files/mambo_master" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/kg" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/aux_files/DGL-Neptune-rgcn-link" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/aux_files/graphqembed-master/netquery" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/aux_files/graphqembed-master" isTestSource="false" />
     </content>
     <orderEntry type="jdk" jdkName="gpu_machine_my_dgl" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />

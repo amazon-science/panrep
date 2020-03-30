@@ -55,8 +55,6 @@ def rgcn_hetero(args):
     link_prediction = args.link_prediction
     mask_links = args.mask_links
     loss_over_all_nodes = args.loss_over_all_nodes
-    num_sampled_edges = args.n_masked_links
-    negative_rate = args.negative_rate
 
 
 
@@ -128,17 +126,14 @@ def rgcn_hetero(args):
     g=ng
     for epoch in range(args.n_epochs):
         t_nm_0 = time.time()
-        if node_masking and use_reconstruction_loss:
-            masked_nodes, g = node_masker(g, num_nodes=num_masked_nodes, masked_node_types=masked_node_types)
-        else:
-            masked_nodes = {}
+        masked_nodes,g = node_masker(g, num_nodes=num_masked_nodes, masked_node_types=masked_node_types,node_masking=node_masking,
+                                     use_reconstruction_loss=use_reconstruction_loss)
         t_nm_1 = time.time()
         # TODO check that g is not the same as g...
         t_lm_0 = time.time()
         if link_prediction:
-            g, samples_d, llabels_d = hetero_edge_masker_sampler(g, num_sampled_edges, negative_rate,
-                                                                     mask_links,use_cuda)
-
+            g, samples_d, labels_d = hetero_edge_masker_sampler(g, args.pct_masked_edges, args.negative_rate,
+                                                                mask_links, use_cuda)
         else:
             # TODO check that the g deletes old masked edges, nodes.
             samples_d = {}
@@ -148,7 +143,7 @@ def rgcn_hetero(args):
         optimizer.zero_grad()
         t0 = time.time()
         loss, embeddings = model(g=g, masked_nodes=masked_nodes, sampled_links=samples_d,
-                                 sampled_link_labels=llabels_d)
+                                 sampled_link_labels=labels_d)
         t1 = time.time()
         loss.backward()
         optimizer.step()
@@ -200,10 +195,12 @@ def rgcn_hetero(args):
         if use_cuda:
             for i in range(len(embeddings)):
                 embeddings[i] = embeddings[i].cuda()
-    model = DownstreamLinkPredictor(in_dim=inp_dim,
-                                    out_dim=inp_dim, etypes=g.etypes,use_cuda=use_cuda,
+    model = DownstreamLinkPredictor(in_dim=args.n_hidden,
+                                    out_dim=args.n_hidden, etypes=g.etypes,use_cuda=use_cuda,
                                     ntype2id=ntype2id,num_hidden_layers=nbr_downstream_layers)
-
+    model = DownstreamLinkPredictor(in_dim=embeddings[i].shape[1],out_dim=h_dim,  use_cuda=use_cuda,
+                                    etypes=g.etypes, ntype2id=ntype2id,num_hidden_layers=nbr_downstream_layers,
+                                    reg_param=args.regularization)
     if use_cuda:
         model.cuda()
 
@@ -222,17 +219,12 @@ def rgcn_hetero(args):
     for epoch in range(args.n_cepochs):
         optimizer.zero_grad()
         t_lm_0 = time.time()
-        samples_d, labels_d = negative_sampling(g,train_edges,  negative_rate=args.negative_rate_downstream)
-        n_labels_d = {}
-        for e in labels_d.keys():
-                n_labels_d[e] = torch.from_numpy(labels_d[e])
-                if use_cuda:
-                    n_labels_d[e] = n_labels_d[e].cuda()
-        labels_d = n_labels_d
+        g, samples_d, labels_d = hetero_edge_masker_sampler(g, args.pct_masked_edges_d, args.negative_rate_d,
+                                                            True, use_cuda)
         t_lm_1 = time.time()
 
         t0 = time.time()
-        embed = model(g,embeddings)
+        embed = model(g, embeddings)
         loss = model.get_loss(g,embed, samples_d, labels_d)
         t1 = time.time()
         loss.backward()
@@ -315,7 +307,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PanRep')
     parser.add_argument("--dropout", type=float, default=0.2,
             help="dropout probability")
-    parser.add_argument("--n-hidden", type=int, default=250,
+    parser.add_argument("--n-hidden", type=int, default=200,
             help="number of hidden units") # use 16, 2 for debug
     parser.add_argument("--gpu", type=int, default=1,
             help="gpu")
@@ -329,15 +321,18 @@ if __name__ == '__main__':
             help="number of propagation rounds")
     parser.add_argument("-e", "--n-epochs", type=int, default=300,
             help="number of training epochs for decoder")
-    parser.add_argument("-ec", "--n-cepochs", type=int, default=500,
+    parser.add_argument("-ec", "--n-cepochs", type=int, default=1000,
                         help="number of training epochs for classification")
     parser.add_argument("-num_masked", "--n-masked-nodes", type=int, default=100,
                         help="number of masked nodes")
-    parser.add_argument("-num_masked_links", "--n-masked-links", type=int, default=100,
+    parser.add_argument("-pct_masked_edges", "--pct-masked-edges", type=int, default=0.1,
                         help="number of masked links")
-    parser.add_argument("-negative_rate", "--negative-rate", type=int, default=2,
+    parser.add_argument("-pct_masked_edges_d", "--pct-masked-edges-d", type=int, default=0.5,
+                        help="number of masked links")
+
+    parser.add_argument("-negative_rate", "--negative-rate", type=int, default=10,
                         help="number of negative examples per masked link")
-    parser.add_argument("-negative_rate_d", "--negative-rate-downstream", type=int, default=2,
+    parser.add_argument("-negative_rate_d", "--negative-rate-d", type=int, default=10,
                         help="number of negative examples per masked link for the downstream task")
 
     parser.add_argument("-d", "--dataset", type=str, required=True,
@@ -350,7 +345,7 @@ if __name__ == '__main__':
             help="remove untouched nodes and relabel")
     parser.add_argument("--use-self-loop", default=False, action='store_true',
             help="include self feature as a special relation")
-    parser.add_argument("--use-infomax-loss", default=False, action='store_true',
+    parser.add_argument("--use-infomax-loss", default=True, action='store_true',
                         help="use infomax task supervision")
     parser.add_argument("--use-reconstruction-loss", default=False, action='store_true',
                         help="use feature reconstruction task supervision")
@@ -362,7 +357,7 @@ if __name__ == '__main__':
                        help="use link prediction as supervision task")
     parser.add_argument("--mask-links", default=False, action='store_true',
                        help="mask the links to be predicted")
-    parser.add_argument("--evaluate-every", type=int, default=100,
+    parser.add_argument("--evaluate-every", type=int, default=500,
             help="perform evaluation every n epochs")
     parser.add_argument("--eval-batch-size", type=int, default=100,
             help="batch size when evaluating")

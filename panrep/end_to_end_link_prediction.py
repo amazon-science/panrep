@@ -37,23 +37,13 @@ def rgcn_hetero(args):
     use_cuda = args.gpu >= 0 and torch.cuda.is_available()
     if use_cuda:
         torch.cuda.set_device(args.gpu)
-        # labels = labels.cuda()
-        # train_idx = train_idx.cuda()
-        # test_idx = test_idx.cuda()
-
-
-    device = torch.device("cuda:" + str(args.gpu) if use_cuda else "cpu")
-        # create model
-    #dgl.contrib.sampling.sampler.EdgeSampler(g['customer_to_transaction'], batch_size=100)
-
-    #g.adjacency_matrix(transpose=True,scipy_fmt='coo',etype='customer_to_transaction')
 
     ng = create_edge_mask(g, use_cuda)
     # keep a reference to previous graph?
     og = g
     g = ng
-    inp_dim = args.n_hidden
-    nbr_downstream_layers = 3
+    h_dim = args.n_hidden
+    nbr_downstream_layers = args.n_layers-1
     # map input features as embeddings
     embeddings=[[]*len(g.ntypes)]
     for i, ntype in enumerate(g.ntypes):
@@ -61,8 +51,9 @@ def rgcn_hetero(args):
     ntype2id = {}
     for i, ntype in enumerate(g.ntypes):
             ntype2id[ntype] = i
-    model = DownstreamLinkPredictor(in_dim=embeddings[i].shape[1],out_dim=inp_dim,  use_cuda=use_cuda,
-                                    etypes=g.etypes, ntype2id=ntype2id,num_hidden_layers=nbr_downstream_layers)
+    model = DownstreamLinkPredictor(in_dim=embeddings[i].shape[1],out_dim=h_dim,  use_cuda=use_cuda,
+                                    etypes=g.etypes, ntype2id=ntype2id,num_hidden_layers=nbr_downstream_layers,
+                                    reg_param=args.regularization)
 
     if use_cuda:
         model.cuda()
@@ -186,9 +177,11 @@ if __name__ == '__main__':
             help="number of filter weight matrices, default: -1 [use all]")
     parser.add_argument("--n-layers", type=int, default=4,
             help="number of propagation rounds")
+    parser.add_argument("--regularization", type=float, default=0.01,
+            help="regularization weight")
     parser.add_argument("-e", "--n-epochs", type=int, default=200,
             help="number of training epochs for decoder")
-    parser.add_argument("-ec", "--n-cepochs", type=int, default=2000,
+    parser.add_argument("-ec", "--n-cepochs", type=int, default=6000,
                         help="number of training epochs for classification")
     parser.add_argument("-num_masked", "--n-masked-nodes", type=int, default=100,
                         help="number of masked nodes")
@@ -219,9 +212,9 @@ if __name__ == '__main__':
                         help="compute the feature reconstruction loss over all nods or just the masked")
     parser.add_argument("--link-prediction", default=True, action='store_true',
                        help="use link prediction as supervision task")
-    parser.add_argument("--mask-links", default=False, action='store_true',
+    parser.add_argument("--mask-links", default=True, action='store_true',
                        help="mask the links to be predicted")
-    parser.add_argument("--evaluate-every", type=int, default=200,
+    parser.add_argument("--evaluate-every", type=int, default=500,
             help="perform evaluation every n epochs")
     parser.add_argument("--eval-batch-size", type=int, default=500,
             help="batch size when evaluating")

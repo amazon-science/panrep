@@ -253,7 +253,7 @@ def main(args):
         feats=feats.cuda()
 
     # optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2norm)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr_d, weight_decay=args.l2norm)
 
     # training loop
     print("start training...")
@@ -318,17 +318,19 @@ if __name__ == '__main__':
             help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=60,
             help="number of hidden units") # use 16, 2 for debug
-    parser.add_argument("--gpu", type=int, default=0,
+    parser.add_argument("--gpu", type=int, default=4,
             help="gpu")
-    parser.add_argument("--lr", type=float, default=1e-2,
+    parser.add_argument("--lr", type=float, default=1e-3,
+            help="learning rate")
+    parser.add_argument("--lr-d", type=float, default=1e-2,
             help="learning rate")
     parser.add_argument("--n-bases", type=int, default=20,
             help="number of filter weight matrices, default: -1 [use all]")
     parser.add_argument("--n-layers", type=int, default=3,
             help="number of propagation rounds")
-    parser.add_argument("-e", "--n-epochs", type=int, default=50,
+    parser.add_argument("-e", "--n-epochs", type=int, default=300,
             help="number of training epochs for decoder")
-    parser.add_argument("-ec", "--n-cepochs", type=int, default=400,
+    parser.add_argument("-ec", "--n-cepochs", type=int, default=500,
                         help="number of training epochs for classification")
     parser.add_argument("-num_masked", "--n-masked-nodes", type=int, default=100,
                         help="number of masked nodes")
@@ -361,7 +363,7 @@ if __name__ == '__main__':
     parser.add_argument("--mask-links", default=True, action='store_true',
                        help="mask the links to be predicted")
 
-    parser.add_argument("--batch-size", type=int, default=100,
+    parser.add_argument("--batch-size", type=int, default=5000,
             help="Mini-batch size. If -1, use full graph training.")
     parser.add_argument("--model_path", type=str, default=None,
             help='path for save the model')
@@ -373,7 +375,7 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'imdb','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'wn18','--encoder', 'RGCN'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     main(args)
