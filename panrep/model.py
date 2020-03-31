@@ -15,7 +15,7 @@ class PanRepRGCNHetero(nn.Module):
                  masked_node_types=[],
                  num_hidden_layers=1,
                  dropout=0, loss_over_all_nodes=False, use_reconstruction_task=True, use_infomax_task=True,
-                 link_prediction_task=False,use_cuda=False):
+                 link_prediction_task=False,use_cuda=False,average_across_node_types=False):
         super(PanRepRGCNHetero, self).__init__()
         self.h_dim = h_dim
         self.out_dim = out_dim
@@ -25,7 +25,7 @@ class PanRepRGCNHetero(nn.Module):
         self.use_infomax_task=use_infomax_task
         self.link_prediction_task=link_prediction_task
         self.loss_over_all_nodes=loss_over_all_nodes
-        self.infomax=MutualInformationDiscriminator(n_hidden=h_dim)
+        self.infomax=MutualInformationDiscriminator(n_hidden=h_dim,average_across_node_types=average_across_node_types)
         self.use_cuda = use_cuda
         self.encoder = encoder
         self.linkPredictor = LinkPredictor(out_dim=h_dim,etypes=etypes,ntype2id=ntype2id,use_cuda=use_cuda)
@@ -62,10 +62,10 @@ class PanRepRGCNHetero(nn.Module):
 
         return loss, positive
 
-    def forward_mb(self, masked_emb, original_emb, blocks, perm_emb,masked_nodes, sampled_links, sampled_link_labels):
+    def forward_mb(self, blocks, perm_emb,masked_nodes, sampled_links, sampled_link_labels):
 
         #h=self.encoder(corrupt=False)
-        positive = self.encoder.forward_mb(masked_emb, blocks)
+        positive = self.encoder.forward_mb(blocks)
         loss=0
 
         if self.use_infomax_task:
@@ -74,7 +74,7 @@ class PanRepRGCNHetero(nn.Module):
             loss += infomax_loss
 
         if self.use_reconstruction_task:
-            reconstruct_loss = self.attributeDecoder.forward_mb(original_emb,positive,masked_nodes=masked_nodes)
+            reconstruct_loss = self.attributeDecoder.forward_mb(blocks[-1],positive,masked_nodes=masked_nodes)
             loss += reconstruct_loss
 
         if self.link_prediction_task:

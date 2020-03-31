@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 
-from layers import RelGraphConvHetero, EmbeddingLayer, RelGraphAttentionHetero
+from layers import RelGraphConvHetero, EmbeddingLayer, RelGraphAttentionHetero,MiniBatchRelGraphEmbed
 
 
 class EncoderRGCN(BaseRGCN):
@@ -92,6 +92,8 @@ class EncoderRelGraphConvHetero(nn.Module):
                  in_size_dict,
                  etypes,
                  ntypes,
+                 device,
+                 g,
                  num_bases=-1,
                  num_hidden_layers=1,
                  dropout=0,
@@ -107,6 +109,7 @@ class EncoderRelGraphConvHetero(nn.Module):
         self.use_self_loop = use_self_loop
         self.in_size_dict = in_size_dict
 
+        self.embed_layer_mb = MiniBatchRelGraphEmbed(g=g,device=device,embed_size=h_dim)
         self.embed_layer = EmbeddingLayer(self.in_size_dict, h_dim, ntypes)
         self.layers = nn.ModuleList()
         # h2h
@@ -135,9 +138,9 @@ class EncoderRelGraphConvHetero(nn.Module):
         for layer in self.layers:
             h = layer(g, h)
         return h
-    def forward_mb(self, embedding,blocks):
+    def forward_mb(self,blocks):
 
-        h = self.embed_layer.forward_mb(embedding)
+        h = self.embed_layer_mb(blocks[0])
         for layer, block in zip(self.layers, blocks):
             h = layer.forward_mb(block, h)
         return h

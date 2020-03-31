@@ -56,8 +56,8 @@ def load_link_pred_wn_data(args):
 
     # In[13]:
 
-    g = pickle.load(open(os.path.join(data_folder, 'graph_reduced.pickle'), "rb")).to(device)
-    link_pred_splits=pickle.load(open(os.path.join(data_folder, 'link_pred_splits.pickle'), "rb"))#.to(device)
+    g = pickle.load(open(os.path.join(data_folder, 'graph_reduced.pickle'), "rb")).to(torch.device("cpu"))
+    link_pred_splits=pickle.load(open(os.path.join(data_folder, 'link_pred_splits.pickle'), "rb"))#.to(torch.device("cpu"))
     num_nodes_per_types={}
     for ntype in g.ntypes:
         num_nodes_per_types[ntype]=g.number_of_nodes(ntype)
@@ -119,7 +119,7 @@ def load_wn_data(args):
     # In[13]:
     # graph file has 81 different node types based on the type of word (but it is unclear what it corresponds to)
     # graph_reduced has the 4 basic node types.
-    g = pickle.load(open(os.path.join(data_folder, 'graph_reduced.pickle'), "rb")).to(device)
+    g = pickle.load(open(os.path.join(data_folder, 'graph_reduced.pickle'), "rb")).to(torch.device("cpu"))
 
     # In[14]:
     labels = g.nodes['word'].data['features'][:, -1].cpu()
@@ -178,9 +178,9 @@ def load_kaggle_shoppers_data(args):
 
     data_folder = "../data/kaggle_shoppers/"
 
-    # In[13]:
+    # In[13]:r
 
-    G = pickle.load(open(os.path.join(data_folder, 'graph_0.001.pickle'), "rb")).to(device)
+    G = pickle.load(open(os.path.join(data_folder, 'graph_0.001.pickle'), "rb")).to(torch.device("cpu"))
 
     # In[14]:
 
@@ -244,7 +244,7 @@ def load_imdb_data(args):
 
     # In[13]:
     # load to cpu for very large graphs
-    G = pickle.load(open(os.path.join(data_folder, 'graph_red.pickle'), "rb")).to(device)
+    G = pickle.load(open(os.path.join(data_folder, 'graph_red.pickle'), "rb")).to(torch.device("cpu"))
 
     # extract adult label from graph
     label_type='genre'

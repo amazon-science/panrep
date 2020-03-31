@@ -76,10 +76,6 @@ def main(args):
     if use_cuda:
         torch.cuda.set_device(args.gpu)
         labels = labels.cuda()
-        #train_idx = train_idx.cuda()
-        #test_idx = test_idx.cuda()
-    # Cast g to cpu
-    g=g.to(torch.device("cpu"))
 
     device = torch.device("cuda:" + str(args.gpu) if use_cuda else "cpu")
         # create model
@@ -105,6 +101,8 @@ def main(args):
     if args.encoder=='RGCN':
         encoder=EncoderRelGraphConvHetero(
                                   args.n_hidden,
+                                    g=g,
+                                    device=device,
                                   num_bases=args.n_bases,
                                   in_size_dict=in_size_dict,
                                           etypes=g.etypes,
@@ -157,7 +155,7 @@ def main(args):
     for ntype in g.ntypes:
         hetero_dataset[ntype]=list(np.arange(g.number_of_nodes(ntype)))
 
-    sampler = PanRepNeighborSampler(g, [args.fanout] * (args.n_layers-1),full_neighbor=True)
+    sampler = PanRepNeighborSampler(g, [args.fanout] * (args.n_layers-1),device=device,full_neighbor=True)
     loader = DataLoader(dataset=list(np.arange(sampler.number_of_nodes)),
                         batch_size=args.batch_size,
                         collate_fn=sampler.sample_blocks,
@@ -184,13 +182,12 @@ def main(args):
 
         optimizer.zero_grad()
         for i, (seeds, blocks) in enumerate(loader):
-            emb_to_reconstruct = extract_dst_embed(node_embed,seeds)
-
             emb = extract_embed(node_embed, blocks[0], permute=False)
 
             perm_emb = extract_perm_embed(node_embed, blocks[0], use_infomax_loss=use_infomax_loss)
 
-            # TODO embedding to be masked must have only the target nodes
+            # TODO embedding to be masked must have only the target nodes for now masked emb not used
+            #  these have to be loaded in the block[0]
             masked_nodes, masked_emb= node_masker_mb(emb, num_masked_nodes, masked_node_types,node_masking)
 
             if link_prediction:
@@ -201,24 +198,18 @@ def main(args):
                 llabels_d = {}
 
             if use_cuda:
-                emb_to_reconstruct = {k: e.cuda() for k, e in emb_to_reconstruct.items()}
-                masked_emb = {k: e.cuda() for k, e in masked_emb.items()}
+                #masked_emb = {k: e.cuda() for k, e in masked_emb.items()}
                 perm_emb={k: e.cuda() for k, e in perm_emb.items()}
 
-            loss, embeddings = model.forward_mb(masked_emb=masked_emb, original_emb=emb_to_reconstruct,
-                                                perm_emb=perm_emb, blocks=blocks,
+            loss, embeddings = model.forward_mb(perm_emb=perm_emb, blocks=blocks,
                                                 masked_nodes=masked_nodes, sampled_links=samples_d,
                                                 sampled_link_labels=llabels_d)
             loss.backward()
             optimizer.step()
-#            if node_masking and use_reconstruction_loss:
-#                g=unmask_nodes(g, masked_node_types)
+
             if link_prediction:
                 g=unmask_edges(g,use_cuda)
 
-            #print("Epoch {:05d} | Train Forward Time(s) {:.4f} | Backward Time(s) {:.4f} | Link masking Time(s) {:.4f} | "
-            #  "Node masking Time(s) {:.4f} | Un masking time  {:.4f}".
-            #  format(epoch, forward_time[-1], backward_time[-1],lm_time[-1],nm_time[-1],un_mas_time[-1]))
             print("Train Loss: {:.4f}".
               format(loss.item()))
             print(

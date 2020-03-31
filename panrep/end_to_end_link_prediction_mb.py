@@ -363,7 +363,7 @@ def fit(args):
         n_hidden_list = [100, 200]
         n_layers_list = [2]
         n_bases_list = [50]
-        lr_list = [1e-2, 1e-3]
+        lr_list = [1e-3,5e-4]
         dropout_list = [0.2]
         fanout_list = [20, 40]
 

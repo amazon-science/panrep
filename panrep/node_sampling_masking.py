@@ -60,10 +60,11 @@ class HeteroNeighborSampler:
         Fanout of each hop starting from the seed nodes. If a fanout is None,
         sample full neighbors.
     """
-    def __init__(self, g, category, fanouts):
+    def __init__(self, g, category, fanouts,device):
         self.g = g
         self.category = category
         self.fanouts = fanouts
+        self.device=device
 
     def sample_blocks(self, seeds):
         blocks = []
@@ -83,12 +84,13 @@ class HeteroNeighborSampler:
 
 
 class PanRepNeighborSampler:
-    def __init__(self, g, fanouts, full_neighbor=False):
+    def __init__(self, g, fanouts, device, full_neighbor=False):
         """
         if fanouts is None, sample full neighbor
         """
         self.g = g
         self.fanouts = fanouts
+        self.device=device
         self.full_neighbor = full_neighbor
         #self.pct_batch=pct_batch
 
@@ -100,6 +102,8 @@ class PanRepNeighborSampler:
     def sample_blocks(self, seeds_list):
         blocks = []
         seeds={}
+        g=self.g
+        device=self.device
         seeds_list.sort()
         for s in seeds_list:
             nid,ntype=self.hetero_map[s]
@@ -108,7 +112,7 @@ class PanRepNeighborSampler:
             else:
                 seeds[ntype]+=[nid]
         for ntype in seeds:
-            seeds[ntype]=torch.tensor(seeds[ntype])
+            seeds[ntype]=torch.tensor(seeds[ntype])#.to(device)
         cur = seeds
         for fanout in self.fanouts:
             if self.full_neighbor:
@@ -116,10 +120,22 @@ class PanRepNeighborSampler:
             else:
                 frontier = dgl.sampling.sample_neighbors(self.g, cur, fanout)
             block = dgl.to_block(frontier, cur)
+
             cur = {}
             for ntype in block.srctypes:
                 cur[ntype] = block.srcnodes[ntype].data[dgl.NID]
             blocks.insert(0, block)
+        # add features to block nodes in first layer only ?
+        for ntype in blocks[0].ntypes:
+            if g.nodes[ntype].data.get("h_f", None) is not None:
+                blocks[0].srcnodes[ntype].data['h_f']=g.nodes[ntype].data['h_f'][
+                    blocks[0].srcnodes[ntype].data['_ID']]
+        for ntype in blocks[-1].ntypes:
+            if g.nodes[ntype].data.get("h_f", None) is not None:
+                blocks[-1].dstnodes[ntype].data['h_f']=g.nodes[ntype].data['h_f'][
+                    blocks[-1].dstnodes[ntype].data['_ID']]
+        for i in range(len(blocks)):
+            blocks[i] = blocks[i].to(device)
         return seeds, blocks
 
 def unmask_nodes(g,masked_node_types):

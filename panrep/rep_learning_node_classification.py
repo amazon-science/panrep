@@ -42,6 +42,7 @@ def rgcn_hetero(args):
     if use_cuda:
         torch.cuda.set_device(args.gpu)
         labels = labels.cuda()
+
         #train_idx = train_idx.cuda()
         #test_idx = test_idx.cuda()
 
@@ -56,6 +57,8 @@ def rgcn_hetero(args):
     link_prediction = args.link_prediction
     mask_links = args.mask_links
     loss_over_all_nodes = args.loss_over_all_nodes
+    average_across_node_types= args.average_infomax_across_node_types
+
     pct_masked_edges = args.pct_masked_links
     negative_rate = args.negative_rate
     #g.adjacency_matrix(transpose=True,scipy_fmt='coo',etype='customer_to_transaction')
@@ -70,6 +73,8 @@ def rgcn_hetero(args):
     if args.encoder=='RGCN':
         encoder=EncoderRelGraphConvHetero(
                                   args.n_hidden,
+                                    device=device,
+                                    g=g,
                                   num_bases=args.n_bases,
                                   in_size_dict=in_size_dict,
                                           etypes=g.etypes,
@@ -101,10 +106,11 @@ def rgcn_hetero(args):
                              use_infomax_task=use_infomax_loss,
                              use_reconstruction_task=use_reconstruction_loss,
                              link_prediction_task=link_prediction,
-                             use_cuda=use_cuda)
+                             use_cuda=use_cuda,average_across_node_types=average_across_node_types)
 
     if use_cuda:
         model.cuda()
+        g=g.to(device)
 
     # optimizer
 
@@ -247,11 +253,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PanRep')
     parser.add_argument("--dropout", type=float, default=0.2,
             help="dropout probability")
-    parser.add_argument("--n-hidden", type=int, default=60,
+    parser.add_argument("--n-hidden", type=int, default=100,
             help="number of hidden units") # use 16, 2 for debug
     parser.add_argument("--gpu", type=int, default=2,
             help="gpu")
-    parser.add_argument("--lr", type=float, default=1e-2,
+    parser.add_argument("--lr", type=float, default=5e-3,
             help="learning rate")
     parser.add_argument("--n-bases", type=int, default=20,
             help="number of filter weight matrices, default: -1 [use all]")
@@ -279,9 +285,9 @@ if __name__ == '__main__':
             help="remove untouched nodes and relabel")
     parser.add_argument("--use-self-loop", default=False, action='store_true',
             help="include self feature as a special relation")
-    parser.add_argument("--use-infomax-loss", default=False, action='store_true',
+    parser.add_argument("--use-infomax-loss", default=True, action='store_true',
                         help="use infomax task supervision")
-    parser.add_argument("--use-reconstruction-loss", default=True, action='store_true',
+    parser.add_argument("--use-reconstruction-loss", default=False, action='store_true',
                         help="use feature reconstruction task supervision")
     parser.add_argument("--node-masking", default=False, action='store_true',
                         help="mask a subset of node features")
@@ -291,13 +297,14 @@ if __name__ == '__main__':
                        help="use link prediction as supervision task")
     parser.add_argument("--mask-links", default=True, action='store_true',
                        help="mask the links to be predicted")
-
+    parser.add_argument("--average-infomax-across-node-types", default=False, action='store_true',
+                       help="mask the links to be predicted")
     fp = parser.add_mutually_exclusive_group(required=False)
     fp.add_argument('--validation', dest='validation', action='store_true')
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'wn18','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'imdb','--encoder', 'RGCN'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     main(args)

@@ -115,22 +115,21 @@ class MultipleAttributeDecoder(nn.Module):
 
         return loss
 
-    def forward_mb(self, original_feature, h, masked_nodes):
+    def forward_mb(self, g, h, masked_nodes):
         node_embed=h
         loss=0
-
+        g = g.local_var()
         for name in self.weight:
-            if name not in self.masked_node_types:
-
+            if g.dstnodes[name].data.get("h_f", None) is not None:
                 reconstructed=self.weight[name](node_embed[name])
                 if bool(masked_nodes):
                     if not self.loss_over_all_nodes:
-                        loss+=F.mse_loss(reconstructed[masked_nodes[name]], original_feature[masked_nodes[name]])
+                        loss+=F.mse_loss(reconstructed[masked_nodes[name]],g.dstnodes[name].data['h_f'])
                     else:
-                        loss += F.mse_loss(reconstructed, original_feature[name])
+                        loss += F.mse_loss(reconstructed, g.dstnodes[name].data['h_f'])
 
                 else:
-                    loss += F.mse_loss(reconstructed, original_feature[name])
+                    loss += F.mse_loss(reconstructed, g.dstnodes[name].data['h_f'])
         #hs = [g.nodes[ntype].data['h'] for ntype in g.ntypes]
 
         return loss
@@ -176,6 +175,8 @@ class MutualInformationDiscriminator(nn.Module):
         l1=0
         l2=0
         if self.average_across_node_types:
+            positives=torch.cat(positives,dim=0)
+            negatives=torch.cat(negatives,dim=0)
             summary = torch.sigmoid(positives.mean(dim=0))
             positive = self.discriminator(positives.mean(dim=0), summary)
             negative = self.discriminator(negatives.mean(dim=0), summary)
