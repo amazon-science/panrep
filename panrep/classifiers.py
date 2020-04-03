@@ -131,12 +131,12 @@ class DLinkPredictorMB(nn.Module):
                  num_hidden_layers=1,
                  dropout=0,
                  use_self_loop=False,
-                 regularization_coef=0):
+                 regularization_coef=0,etype_key_map=None):
         super(DLinkPredictorMB, self).__init__()
         self.g = g
         self.device = device
         self.h_dim = h_dim
-
+        self.etype_key_map=etype_key_map
         self.rel_names = list(set(g.etypes))
         self.rel_names.sort()
         self.num_bases = None if num_bases < 0 else num_bases
@@ -163,16 +163,14 @@ class DLinkPredictorMB(nn.Module):
                 dropout=self.dropout))
         self.layers.to(self.device)
 
-    def forward(self, p_blocks, n_blocks):
+    def forward(self, p_blocks):
         p_h = self.embed_layer(p_blocks[0])
-        n_h = self.embed_layer(n_blocks[0])
 
         for layer, block in zip(self.layers, p_blocks):
             p_h = layer(block, p_h)
-        for layer, block in zip(self.layers, n_blocks):
-            n_h = layer(block, n_h)
 
-        return p_h, n_h
+
+        return p_h
 
     def regularization_loss(self, h_emb, t_emb, nh_emb, nt_emb):
         return torch.mean(h_emb.pow(2)) + \
@@ -202,8 +200,54 @@ class DLinkPredictorMB(nn.Module):
         heads = torch.transpose(heads, 1, 2)
         tmp = (tails * r).reshape(num_chunks, chunk_size, hidden_dim)
         return torch.bmm(tmp, heads)
+    def get_loss(self,p_h, p_g, n_h,n_g, num_chunks, chunk_size, neg_sample_size):
+        # loss calculation
+        for ntype, emb in p_h.items():
+            p_g.nodes[ntype].data['h'] = emb
+        for ntype, emb in n_h.items():
+            n_g.nodes[ntype].data['h'] = emb
+        p_head_emb = []
+        p_tail_emb = []
+        rids = []
+        for canonical_etype in p_g.canonical_etypes:
+            head, tail = p_g.all_edges(etype=canonical_etype)
+            head_emb = p_g.nodes[canonical_etype[0]].data['h'][head]
+            tail_emb = p_g.nodes[canonical_etype[2]].data['h'][tail]
+            idx = self.etype_key_map[canonical_etype]
+            rids.append(torch.full((head_emb.shape[0],), idx, dtype=torch.long))
+            p_head_emb.append(head_emb)
+            p_tail_emb.append(tail_emb)
+        n_head_emb = []
+        n_tail_emb = []
+        for canonical_etype in n_g.canonical_etypes:
+            head, tail = n_g.all_edges(etype=canonical_etype)
+            head_emb = n_g.nodes[canonical_etype[0]].data['h'][head]
+            tail_emb = n_g.nodes[canonical_etype[2]].data['h'][tail]
+            n_head_emb.append(head_emb)
+            n_tail_emb.append(tail_emb)
+        p_head_emb = torch.cat(p_head_emb, dim=0)
+        p_tail_emb = torch.cat(p_tail_emb, dim=0)
+        rids = torch.cat(rids, dim=0)
+        n_head_emb = torch.cat(n_head_emb, dim=0)
+        n_tail_emb = torch.cat(n_tail_emb, dim=0)
+        assert p_head_emb.shape[0] == p_tail_emb.shape[0]
+        assert rids.shape[0] == p_head_emb.shape[0]
+        assert n_head_emb.shape[0] == n_tail_emb.shape[0]
+        n_shuffle_seed = torch.randperm(n_head_emb.shape[0])
+        n_head_emb = n_head_emb[n_shuffle_seed]
+        n_tail_emb = n_tail_emb[n_shuffle_seed]
 
-    def get_loss(self, h_emb, t_emb, nh_emb, nt_emb, rids, num_chunks, chunk_size, neg_sample_size):
+        loss = self.get_loss_h(p_head_emb,
+                              p_tail_emb,
+                              n_head_emb,
+                              n_tail_emb,
+                              rids,
+                              num_chunks,
+                              chunk_size,
+                              neg_sample_size)
+        return loss
+
+    def get_loss_h(self, h_emb, t_emb, nh_emb, nt_emb, rids, num_chunks, chunk_size, neg_sample_size):
         # triplets is a list of data samples (positive and negative)
         # each row in the triplets is a 3-tuple of (source, relation, destination)
         pos_score = self.calc_pos_score(h_emb, t_emb, rids)

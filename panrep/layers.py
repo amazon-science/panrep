@@ -107,7 +107,7 @@ class RelGraphConvHetero(nn.Module):
         """
         g = g.local_var()
         for i, ntype in enumerate(g.ntypes):
-            g.nodes[ntype].data['x'] = xs[i]
+            g.nodes[ntype].data['x'] = xs[ntype]
         ws = self.basis_weight()
         funcs = {}
         for i, (srctype, etype, dsttype) in enumerate(g.canonical_etypes):
@@ -115,25 +115,29 @@ class RelGraphConvHetero(nn.Module):
             g.nodes[srctype].data['h%d' % i] = torch.matmul(
                 g.nodes[srctype].data['x'], ws[etype])# g.edges[etype].data['mask'])
             # TODO use sum instead of mean
-            funcs[(srctype, etype, dsttype)] = (fn.u_mul_e('h%d' % i, 'mask', 'm'), fn.mean('m', 'h'))
+            funcs[(srctype, etype, dsttype)] = (fn.copy_u('h%d' % i, 'm'), fn.mean('m', 'h'))
             # TODO check the masked 1 with without mask that returns the same
             #funcs[(srctype, etype, dsttype)] = (fn.copy_u('h%d' % i, 'm'), fn.mean('m', 'h'))
         # message passing
-        #  sum for the link prediction to not consider the zero messages
         g.multi_update_all(funcs, 'sum')
 
-        hs = [g.nodes[ntype].data['h'] for ntype in g.ntypes]
-        for i in range(len(hs)):
-            h = hs[i]
+        hs = {}
+        for ntype in g.ntypes:
+            if 'h' in g.nodes[ntype].data:
+                hs[ntype] = g.nodes[ntype].data['h']
+
+        def _apply(h,ntype):
             # apply bias and activation
             if self.self_loop:
-                h = h + torch.matmul(xs[i], self.loop_weight)
+                h = h + torch.matmul(xs[ntype][:h.shape[0]], self.loop_weight)
             if self.bias:
                 h = h + self.h_bias
             if self.activation:
                 h = self.activation(h)
             h = self.dropout(h)
-            hs[i] = h
+            return h
+
+        hs = {ntype: _apply(h,ntype) for ntype, h in hs.items()}
         return hs
 
 
@@ -169,17 +173,17 @@ class RelGraphConvHetero(nn.Module):
         for ntype in g.dsttypes:
             if 'h' in g.dstnodes[ntype].data:
                 hs[ntype] = g.dstnodes[ntype].data['h']
-        def _apply(h):
+        def _apply(h,ntype):
             # apply bias and activation
             if self.self_loop:
-                h = h + torch.matmul(xs[ntype], self.loop_weight)
+                h = h + torch.matmul(xs[ntype][:h.shape[0]], self.loop_weight)
             if self.bias:
                 h = h + self.h_bias
             if self.activation:
                 h = self.activation(h)
             h = self.dropout(h)
             return h
-        hs = {ntype : _apply(h) for ntype, h in hs.items()}
+        hs = {ntype : _apply(h,ntype) for ntype, h in hs.items()}
         return hs
 
 
@@ -193,7 +197,7 @@ class EmbeddingLayer(nn.Module):
 
     def forward(self, G):
         for name in self.weight:
-            G.apply_nodes(lambda nodes: {'h': self.weight[name](nodes.data['features'])}, ntype=name);
+            G.apply_nodes(lambda nodes: {'h': self.weight[name](nodes.data['h_f'])}, ntype=name);
         hs = [G.nodes[ntype].data['h'] for ntype in G.ntypes]
         return hs
     def forward_mb(self, embeddings):

@@ -41,7 +41,7 @@ def negative_sampling(g,pos_samples_d,  negative_rate):
 
 class RGCNLinkRankSampler:
     def __init__(self, g, num_edges, etypes, etype_map, phead_ids, ptail_ids, fanouts,
-                 nhead_ids, ntail_ids, num_neg=None):
+                 nhead_ids, ntail_ids, num_neg=None,device=None):
         self.g = g
         self.num_edges = num_edges
         self.etypes = etypes
@@ -52,8 +52,10 @@ class RGCNLinkRankSampler:
         self.ntail_ids = ntail_ids
         self.fanouts = fanouts
         self.num_neg = num_neg
+        self.device=device
 
     def sample_blocks(self, seeds):
+        block_sample_s=time.time()
         bsize = len(seeds)
         pseed = seeds
         if self.num_neg is not None:
@@ -68,6 +70,8 @@ class RGCNLinkRankSampler:
         ptail_ids = self.ptail_ids
         nhead_ids = self.nhead_ids
         ntail_ids = self.ntail_ids
+
+        device=self.device
         # positive seeds
         pseed = torch.stack(pseed)
         p_etypes = etypes[pseed]
@@ -145,6 +149,7 @@ class RGCNLinkRankSampler:
         n_blocks = []
         p_cur = pg_seed
         n_cur = ng_seed
+        frontier_s=time.time()
         for i, fanout in enumerate(fanouts):
             if fanout is None:
                 p_frontier = dgl.in_subgraph(g, p_cur)
@@ -187,6 +192,8 @@ class RGCNLinkRankSampler:
                 n_cur[ntype] = n_block.srcnodes[ntype].data[dgl.NID]
             n_blocks.insert(0, n_block)
         # add features to block nodes in first layer only ?
+        frontier_time=time.time()-frontier_s
+        cops=time.time()
         for ntype in p_blocks[0].ntypes:
             if g.nodes[ntype].data.get("h_f", None) is not None:
                 p_blocks[0].srcnodes[ntype].data['h_f']=g.nodes[ntype].data['h_f'][
@@ -195,6 +202,20 @@ class RGCNLinkRankSampler:
             if g.nodes[ntype].data.get("h_f", None) is not None:
                 n_blocks[0].srcnodes[ntype].data['h_f']=g.nodes[ntype].data['h_f'][
                     n_blocks[0].srcnodes[ntype].data['_ID']]
+        time_copy=time.time()-cops
+
+        for i in range(len(n_blocks)):
+            n_blocks[i] = n_blocks[i].to(device)
+        for i in range(len(p_blocks)):
+            p_blocks[i] = p_blocks[i].to(device)
+        block_sample_time=time.time()-block_sample_s
+        #print('copy time')
+        #print(time_copy)
+        #print('frontier calculation time')
+        #print(frontier_time)
+        #print('overal sampling time')
+        #print(block_sample_time)
+
         return (bsize, p_g, n_g, p_blocks, n_blocks)
 
 

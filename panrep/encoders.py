@@ -109,8 +109,7 @@ class EncoderRelGraphConvHetero(nn.Module):
         self.use_self_loop = use_self_loop
         self.in_size_dict = in_size_dict
 
-        self.embed_layer_mb = MiniBatchRelGraphEmbed(g=g,device=device,embed_size=h_dim)
-        self.embed_layer = EmbeddingLayer(self.in_size_dict, h_dim, ntypes)
+        self.embed_layer = MiniBatchRelGraphEmbed(g=g,device=device,embed_size=h_dim)#EmbeddingLayer(self.in_size_dict, h_dim, ntypes)
         self.layers = nn.ModuleList()
         # h2h
         for i in range(self.num_hidden_layers):
@@ -134,13 +133,15 @@ class EncoderRelGraphConvHetero(nn.Module):
         else:
             g = G
 
-        h = self.embed_layer(g)
+        h_d = self.embed_layer(g)
+
         for layer in self.layers:
-            h = layer(g, h)
+            h = layer(g, h_d)
         return h
     def forward_mb(self,blocks):
 
-        h = self.embed_layer_mb(blocks[0])
+        h = self.embed_layer(blocks[0])
+
         for layer, block in zip(self.layers, blocks):
             h = layer.forward_mb(block, h)
         return h

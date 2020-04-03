@@ -15,10 +15,99 @@ def load_hetero_data(args):
         train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_wn_data(args)
     elif args.dataset == "imdb":
         train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_imdb_data(args)
+    elif args.dataset == "imdb_preprocessed":
+        train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_imdb_preprocessed_data(args)
     else:
         raise NotImplementedError
     return train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types
 
+def load_hetero_link_pred_data(args):
+    if args.dataset == "wn":
+        train_edges, test_edges, valid_edges, train_g, valid_g, test_g, featless_node_types = load_link_pred_wn_data(
+            args)
+    elif args.dataset == "query_biodata":
+        train_edges, test_edges, valid_edges, train_g, valid_g, test_g, featless_node_types = load_link_pred_query_biodata_data(
+            args)
+    else:
+        raise NotImplementedError
+
+    return train_edges, test_edges, valid_edges, train_g, valid_g, test_g, featless_node_types
+def load_link_pred_query_biodata_data(args):
+    def triplets_to_dict(edges,etype_to_canonical):
+        d_e={}
+        s,e,d=edges
+        for sou,edg,dest in zip(s,e,d):
+            edg =str(edg)
+            edg=etype_to_canonical[edg]
+            if edg not in d_e:
+                d_e[edg]=[(sou,dest)]
+            else:
+                d_e[edg]+=[(sou,dest)]
+        return d_e
+    use_cuda = args.gpu
+    check_cuda = torch.cuda.is_available()
+    if use_cuda < 0:
+        check_cuda = False;
+    device = torch.device("cuda:" + str(use_cuda) if check_cuda else "cpu")
+    print("Using device", device)
+    cpu_device = torch.device("cpu");
+
+    # In[10]:
+
+    seed = 0;
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    torch.backends.cudnn.deterministic = True
+
+    # In[12]:
+
+    data_folder = "../data/query_biodata/"
+
+    # In[13]:
+
+    g = pickle.load(open(os.path.join(data_folder, 'graph.pickle'), "rb")).to(torch.device("cpu"))
+    link_pred_splits=pickle.load(open(os.path.join(data_folder, 'link_pred_splits.pickle'), "rb"))#.to(torch.device("cpu"))
+    #TODO finish the split of the edges check the saurav code
+    #get eid from heterograph and use dgl.edge_subgraph
+    train = 0.8
+    test= 0.5
+    num_nodes_per_types={}
+    for ntype in g.ntypes:
+        num_nodes_per_types[ntype]=g.number_of_nodes(ntype)
+    # In[14]:
+    etype_to_canonical={}
+    for i, etype in enumerate(g.etypes):
+        etype_to_canonical[etype]=g.canonical_etypes[i]
+
+    train_edges=triplets_to_dict(link_pred_splits['tr'],etype_to_canonical)
+    test_edges = triplets_to_dict(link_pred_splits['test'],etype_to_canonical)
+    valid_edges =triplets_to_dict( link_pred_splits['val'],etype_to_canonical)
+    train_g=dgl.heterograph(train_edges,num_nodes_per_types)
+    valid_g = dgl.heterograph(valid_edges, num_nodes_per_types)
+    test_g = dgl.heterograph(test_edges, num_nodes_per_types)
+    # remove last feature
+    g.nodes[ntype].data['features']=g.nodes[ntype].data['features'][:,:-1]
+    use_feats=True
+    if use_feats:
+        for ntype in g.ntypes:
+            if g.nodes[ntype].data.get("features", None) is not None:
+                train_g.nodes[ntype].data['h_f'] = g.nodes[ntype].data['features']
+                valid_g.nodes[ntype].data['h_f'] = g.nodes[ntype].data['features']
+                test_g.nodes[ntype].data['h_f'] = g.nodes[ntype].data['features']
+    # Create the train, valid, test graphs
+    for e in train_edges.keys():
+        train_edges[e]=torch.tensor(train_edges[e]).long().transpose(1,0)
+    for e in valid_edges.keys():
+        valid_edges[e]=torch.tensor(valid_edges[e]).long().transpose(1,0)
+    for e in test_edges.keys():
+        test_edges[e]=torch.tensor(test_edges[e]).long().transpose(1,0)
+
+    featless_node_types=[]
+
+    return train_edges, test_edges, valid_edges, train_g,valid_g,test_g, featless_node_types
 
 def load_link_pred_wn_data(args):
     def triplets_to_dict(edges,etype_to_canonical):
@@ -219,6 +308,61 @@ def load_kaggle_shoppers_data(args):
     num_classes=1
     featless_node_types = ['brand', 'customer', 'chain', 'market', 'dept', 'category', 'company']
     return train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types
+def load_imdb_preprocessed_data(args):
+    use_cuda = args.gpu
+    check_cuda = torch.cuda.is_available()
+    if use_cuda < 0:
+        check_cuda = False;
+    device = torch.device("cuda:" + str(use_cuda) if check_cuda else "cpu")
+    print("Using device", device)
+    cpu_device = torch.device("cpu");
+
+    # In[10]:
+
+    seed = 0;
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    torch.backends.cudnn.deterministic = True
+
+    # In[12]:
+
+    data_folder = "../data/imdb_preprocessed/"
+
+    # In[13]:
+    # load to cpu for very large graphs
+    G = pickle.load(open(os.path.join(data_folder, 'graph.pickle'), "rb")).to(torch.device("cpu"))
+    labels = pickle.load(open(os.path.join(data_folder, 'labels.pickle'), "rb"))
+    train_val_test_idx = np.load(data_folder + 'train_val_test_idx.npz')
+
+    print(G)
+
+
+    print(labels)
+
+    train_idx = train_val_test_idx['train_idx']
+    val_idx = train_val_test_idx['val_idx']
+    test_idx = train_val_test_idx['test_idx']
+
+    train_idx = np.array(train_idx)
+    test_idx = np.array(test_idx)
+    val_idx = np.array(val_idx)
+    category='movie'
+    num_classes = 3
+    if num_classes > 1:
+        labels_n = torch.zeros((np.shape(labels)[0], num_classes))
+        if check_cuda:
+            labels_n.cuda()
+        for i in range(np.shape(labels)[0]):
+            labels_n[i, int(labels[i])] = 1
+    else:
+        labels_n = labels
+    labels = labels_n
+    featless_node_types = []
+    return train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types
+
 def load_imdb_data(args):
     use_cuda = args.gpu
     check_cuda = torch.cuda.is_available()

@@ -7,7 +7,7 @@ Difference compared to tkipf/relation-gcn
 * l2norm applied to all weights
 * remove nodes that won't be touched
 """
-from node_sampling_masking import  node_masker_mb,HeteroNeighborSampler,PanRepNeighborSampler
+from node_sampling_masking import  node_masker_mb,HeteroNeighborSampler,InfomaxNodeRecNeighborSampler
 
 
 import argparse
@@ -24,7 +24,10 @@ from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader
 from edge_masking_samling import hetero_edge_masker_sampler,create_edge_mask,unmask_edges
 from encoders import EncoderRelGraphConvHetero,EncoderRelGraphAttentionHetero
-
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import f1_score, normalized_mutual_info_score, adjusted_rand_score
+from sklearn.cluster import KMeans
+from sklearn.svm import LinearSVC
 
 def extract_embed(node_embed, block, permute=False):
     emb = {}
@@ -61,15 +64,14 @@ def evaluate(model, seeds, blocks, node_embed, labels, category, use_cuda):
     acc = torch.sum(logits.argmax(dim=1) == lbl).item() / len(seeds)
     return loss, acc
 
-def main(args):
+def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_prediction, use_reconstruction_loss,
+         use_infomax_loss, mask_links,use_self_loop, args):
     train_idx, test_idx, val_idx, labels, g, category, num_classes, masked_node_types=\
         load_hetero_data(args)
 
-
-    category_id = len(g.ntypes)
-    for i, ntype in enumerate(g.ntypes):
-        if ntype == category:
-            category_id = i
+    # sampler parameters
+    batch_size = 5000
+    l2norm=0.0001
 
     # check cuda
     use_cuda = args.gpu >= 0 and torch.cuda.is_available()
@@ -80,54 +82,58 @@ def main(args):
     device = torch.device("cuda:" + str(args.gpu) if use_cuda else "cpu")
         # create model
     #dgl.contrib.sampling.sampler.EdgeSampler(g['customer_to_transaction'], batch_size=100)
-    use_reconstruction_loss = args.use_reconstruction_loss
-    use_infomax_loss = args.use_infomax_loss
-    num_masked_nodes = args.n_masked_nodes
-    node_masking = args.node_masking
-    link_prediction = args.link_prediction
-    mask_links = args.mask_links
-    loss_over_all_nodes = args.loss_over_all_nodes
-    pct_masked_edges = args.pct_masked_links
-    negative_rate = args.negative_rate
+    use_reconstruction_loss = use_reconstruction_loss
+    use_infomax_loss = use_infomax_loss
+
+    # not used currently
+    num_masked_nodes = -1
+    node_masking = False
+    loss_over_all_nodes = True
+    pct_masked_edges = -1
+    negative_rate = -1
+    link_prediction = use_link_prediction
+    mask_links = mask_links
+
     #g.adjacency_matrix(transpose=True,scipy_fmt='coo',etype='customer_to_transaction')
 
     # for the embedding layer
     in_size_dict={}
     for name in g.ntypes:
-        in_size_dict[name] = g.nodes[name].data['features'].size(1);
+        in_size_dict[name] = g.nodes[name].data['h_f'].size(1);
     ntype2id = {}
     for i, ntype in enumerate(g.ntypes):
             ntype2id[ntype] = i
     if args.encoder=='RGCN':
         encoder=EncoderRelGraphConvHetero(
-                                  args.n_hidden,
+                                  n_hidden,
                                     g=g,
                                     device=device,
-                                  num_bases=args.n_bases,
+                                  num_bases=n_bases,
                                   in_size_dict=in_size_dict,
                                           etypes=g.etypes,
                                         ntypes=g.ntypes,
-                                  num_hidden_layers=args.n_layers - 1,
-                                  dropout=args.dropout,
-                                  use_self_loop=args.use_self_loop)
+                                  num_hidden_layers=n_layers,
+                                  dropout=dropout,
+                                  use_self_loop=use_self_loop)
     elif args.encoder=='RGAT':
         encoder = EncoderRelGraphAttentionHetero(
-                                            args.n_hidden,
+                                            n_hidden,
                                             in_size_dict=in_size_dict,
                                             etypes=g.etypes,
                                             ntypes=g.ntypes,
-                                            num_hidden_layers=args.n_layers - 1,
-                                            dropout=args.dropout,
-                                            use_self_loop=args.use_self_loop)
+                                            num_hidden_layers=n_layers,
+                                            dropout=dropout,
+                                            use_self_loop=use_self_loop)
+
 
     model = PanRepRGCNHetero(
-                             args.n_hidden,
-                             args.n_hidden,
+                             n_hidden,
+                             n_hidden,
                              etypes=g.etypes,
                              encoder=encoder,
                              ntype2id=ntype2id,
-                             num_hidden_layers=args.n_layers - 1,
-                             dropout=args.dropout,
+                             num_hidden_layers=n_layers,
+                             dropout=dropout,
                              in_size_dict=in_size_dict,
                              masked_node_types=masked_node_types,
                              loss_over_all_nodes=loss_over_all_nodes,
@@ -140,7 +146,7 @@ def main(args):
         model.cuda()
     node_embed={}
     for ntype in g.ntypes:
-       node_embed[ntype]=g.nodes[ntype].data['features']
+       node_embed[ntype]=g.nodes[ntype].data['h_f']
 
 
     if len(labels.shape)>1:
@@ -149,22 +155,23 @@ def main(args):
         train_idx=np.array(list(set(train_idx).difference(set(zero_rows))))
         val_idx = np.array(list(set(val_idx).difference(set(zero_rows))))
         test_idx = np.array(list(set(test_idx).difference(set(zero_rows))))
+        #TODO val set not used currently
 
 
     hetero_dataset={}
     for ntype in g.ntypes:
         hetero_dataset[ntype]=list(np.arange(g.number_of_nodes(ntype)))
 
-    sampler = PanRepNeighborSampler(g, [args.fanout] * (args.n_layers-1),device=device,full_neighbor=True)
+    sampler = InfomaxNodeRecNeighborSampler(g, [fanout] * (n_layers), device=device, full_neighbor=True)
     loader = DataLoader(dataset=list(np.arange(sampler.number_of_nodes)),
-                        batch_size=args.batch_size,
+                        batch_size=batch_size,
                         collate_fn=sampler.sample_blocks,
                         shuffle=True,
                         num_workers=0)
 
 
     # optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2norm)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=l2norm)
 
     # training loop
     print("start training...")
@@ -174,10 +181,8 @@ def main(args):
     backward_time = []
     un_mas_time=[]
     model.train()
-    # This creates an all 1 mask for link prediction needed by the current implementation
-    g=create_edge_mask(g,use_cuda)
 
-    for epoch in range(args.n_epochs):
+    for epoch in range(n_epochs):
 
 
         optimizer.zero_grad()
@@ -191,24 +196,17 @@ def main(args):
             masked_nodes, masked_emb= node_masker_mb(emb, num_masked_nodes, masked_node_types,node_masking)
 
             if link_prediction:
-                g, samples_d, llabels_d = hetero_edge_masker_sampler(g, pct_masked_edges, negative_rate, mask_links)
-            else:
-                # TODO check that the new_g deletes old masked edges, nodes.
-                samples_d = {}
-                llabels_d = {}
+                raise NotImplementedError
 
             if use_cuda:
                 #masked_emb = {k: e.cuda() for k, e in masked_emb.items()}
                 perm_emb={k: e.cuda() for k, e in perm_emb.items()}
 
-            loss, embeddings = model.forward_mb(perm_emb=perm_emb, blocks=blocks,
-                                                masked_nodes=masked_nodes, sampled_links=samples_d,
-                                                sampled_link_labels=llabels_d)
+            loss, embeddings = model.forward_mb(perm_emb=perm_emb, p_blocks=blocks,
+                                                masked_nodes=masked_nodes)
             loss.backward()
             optimizer.step()
 
-            if link_prediction:
-                g=unmask_edges(g,use_cuda)
 
             print("Train Loss: {:.4f}".
               format(loss.item()))
@@ -222,8 +220,6 @@ def main(args):
     if use_cuda:
         model.cpu()
         model.encoder.cpu()
-        for etype in g.etypes:
-            g.edges[etype].data['mask'] = g.edges[etype].data['mask'].cpu()
     with torch.no_grad():
         embeddings = model.encoder.forward(g)
 
@@ -231,20 +227,129 @@ def main(args):
     print("Mean backward time: {:4f}".format(np.mean(backward_time[len(backward_time) // 4:])))
     print("Mean link masking time: {:4f}".format(np.mean(lm_time[len(lm_time) // 4:])))
     print("Mean node masking time: {:4f}".format(np.mean(nm_time[len(nm_time) // 4:])))
+    feats = embeddings[category]
+    # mlp_classifier(feats,use_cuda,args,num_classes,labels,train_idx,val_idx,test_idx,device)
+    labels_i=np.argmax(labels.cpu().numpy(),axis=1)
+    svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std = evaluate_results_nc(
+        feats[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
+
+def fit(args):
+        n_epochs_list = [200,400, 600]
+        n_hidden_list = [100,300,500]
+        n_layers_list = [2,3]
+        n_bases_list = [30]
+        lr_list = [1e-4, 1e-5]
+        dropout_list = [0.2]
+        fanout_list = [None]
+        use_link_prediction_list = [False]
+        use_reconstruction_loss_list = [True, False]
+        use_infomax_loss_list = [True, False]
+        mask_links_list = [False]
+        use_self_loop_list=[False]
+        for n_epochs in n_epochs_list:
+            for n_hidden in n_hidden_list:
+                for n_layers in n_layers_list:
+                    for n_bases in n_bases_list:
+                        for fanout in fanout_list:
+                            for lr in lr_list:
+                                for dropout in dropout_list:
+                                    for use_infomax_loss in use_infomax_loss_list:
+                                        for use_link_prediction in use_link_prediction_list:
+                                            for use_reconstruction_loss in use_reconstruction_loss_list:
+                                                for mask_links in mask_links_list:
+                                                    for use_self_loop in use_self_loop_list:
+                                                        if not use_reconstruction_loss and not use_infomax_loss and not use_link_prediction:
+                                                            continue
+                                                        else:
+                                                            _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
+                                                                     use_link_prediction, use_reconstruction_loss,
+                                                                     use_infomax_loss, mask_links, use_self_loop,args)
+                                                            result = "PanRep-RGCN Model, n_epochs {}; n_hidden {}; n_layers {}; n_bases {}; " \
+                                                                     "fanout {}; lr {}; dropout {} use_reconstruction_loss {} " \
+                                                                     "use_link_prediction {} use_infomax_loss {} mask_links {} use_self_loop {}".format(
+                                                                n_epochs,
+                                                                n_hidden,
+                                                                n_layers,
+                                                                n_bases,
+                                                                0,
+                                                                lr,
+                                                                dropout,
+                                                                use_reconstruction_loss,
+                                                                use_link_prediction,
+                                                                use_infomax_loss,
+                                                                mask_links,use_self_loop)
+                                                            print(result)
+
+        return
+
+def kmeans_test(X, y, n_clusters, repeat=10):
+    nmi_list = []
+    ari_list = []
+    for _ in range(repeat):
+        kmeans = KMeans(n_clusters=n_clusters)
+        y_pred = kmeans.fit_predict(X)
+        nmi_score = normalized_mutual_info_score(y, y_pred, average_method='arithmetic')
+        ari_score = adjusted_rand_score(y, y_pred)
+        nmi_list.append(nmi_score)
+        ari_list.append(ari_score)
+    return np.mean(nmi_list), np.std(nmi_list), np.mean(ari_list), np.std(ari_list)
+
+
+def svm_test(X, y, test_sizes=(0.2, 0.4, 0.6, 0.8), repeat=10):
+    random_states = [182318 + i for i in range(repeat)]
+    result_macro_f1_list = []
+    result_micro_f1_list = []
+    for test_size in test_sizes:
+        macro_f1_list = []
+        micro_f1_list = []
+        for i in range(repeat):
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=test_size, shuffle=True, random_state=random_states[i])
+            svm = LinearSVC(dual=False)
+            svm.fit(X_train, y_train)
+            y_pred = svm.predict(X_test)
+            macro_f1 = f1_score(y_test, y_pred, average='macro')
+            micro_f1 = f1_score(y_test, y_pred, average='micro')
+            macro_f1_list.append(macro_f1)
+            micro_f1_list.append(micro_f1)
+        result_macro_f1_list.append((np.mean(macro_f1_list), np.std(macro_f1_list)))
+        result_micro_f1_list.append((np.mean(micro_f1_list), np.std(micro_f1_list)))
+    return result_macro_f1_list, result_micro_f1_list
+
+
+def evaluate_results_nc(embeddings, labels, num_classes):
+    print('SVM test')
+    svm_macro_f1_list, svm_micro_f1_list = svm_test(embeddings, labels)
+    print('Macro-F1: ' + ', '.join(['{:.6f}~{:.6f} ({:.1f})'.format(macro_f1_mean, macro_f1_std, train_size) for
+                                    (macro_f1_mean, macro_f1_std), train_size in
+                                    zip(svm_macro_f1_list, [0.8, 0.6, 0.4, 0.2])]))
+    print('Micro-F1: ' + ', '.join(['{:.6f}~{:.6f} ({:.1f})'.format(micro_f1_mean, micro_f1_std, train_size) for
+                                    (micro_f1_mean, micro_f1_std), train_size in
+                                    zip(svm_micro_f1_list, [0.8, 0.6, 0.4, 0.2])]))
+    print('K-means test')
+    nmi_mean, nmi_std, ari_mean, ari_std = kmeans_test(embeddings, labels, num_classes)
+    print('NMI: {:.6f}~{:.6f}'.format(nmi_mean, nmi_std))
+    print('ARI: {:.6f}~{:.6f}'.format(ari_mean, ari_std))
+
+    return svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std
+
+
+def mlp_classifier(feats,use_cuda,n_hidden,lr_d,n_cepochs,args,num_classes,labels,train_idx,val_idx,test_idx,device):
     ###
     # Use the encoded features for classification
     # Here we initialize the features using the reconstructed ones
-    feats = embeddings[category_id]
+
     # feats = g.nodes[category].data['features']
+    l2norm = 0.0001
     inp_dim = feats.shape[1]
-    model = ClassifierMLP(input_size=inp_dim, hidden_size=args.n_hidden,out_size=num_classes)
+    model = ClassifierMLP(input_size=inp_dim, hidden_size=n_hidden,out_size=num_classes)
 
     if use_cuda:
         model.cuda()
         feats=feats.cuda()
 
     # optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr_d, weight_decay=args.l2norm)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr_d, weight_decay=l2norm)
 
     # training loop
     print("start training...")
@@ -271,7 +376,7 @@ def main(args):
     best_test_acc = 0
     labels_n=labels
 
-    for epoch in range(args.n_cepochs):
+    for epoch in range(n_cepochs):
         optimizer.zero_grad()
         logits = model(feats)
         loss = F.binary_cross_entropy_with_logits(logits[train_idx].squeeze(1), labels_n[train_idx].type(torch.FloatTensor).to(device))
@@ -309,7 +414,7 @@ if __name__ == '__main__':
             help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=60,
             help="number of hidden units") # use 16, 2 for debug
-    parser.add_argument("--gpu", type=int, default=4,
+    parser.add_argument("--gpu", type=int, default=1,
             help="gpu")
     parser.add_argument("--lr", type=float, default=1e-3,
             help="learning rate")
@@ -319,9 +424,9 @@ if __name__ == '__main__':
             help="number of filter weight matrices, default: -1 [use all]")
     parser.add_argument("--n-layers", type=int, default=3,
             help="number of propagation rounds")
-    parser.add_argument("-e", "--n-epochs", type=int, default=300,
+    parser.add_argument("-e", "--n-epochs", type=int, default=200,
             help="number of training epochs for decoder")
-    parser.add_argument("-ec", "--n-cepochs", type=int, default=500,
+    parser.add_argument("-ec", "--n-cepochs", type=int, default=2,
                         help="number of training epochs for classification")
     parser.add_argument("-num_masked", "--n-masked-nodes", type=int, default=100,
                         help="number of masked nodes")
@@ -335,15 +440,15 @@ if __name__ == '__main__':
             help="dataset to use")
     parser.add_argument("-en", "--encoder", type=str, required=True,
                         help="Encoder to use")
-    parser.add_argument("--l2norm", type=float, default=0.0000,
+    parser.add_argument("--l2norm", type=float, default=0.0001,
             help="l2 norm coef")
     parser.add_argument("--relabel", default=False, action='store_true',
             help="remove untouched nodes and relabel")
     parser.add_argument("--use-self-loop", default=False, action='store_true',
             help="include self feature as a special relation")
-    parser.add_argument("--use-infomax-loss", default=False, action='store_true',
+    parser.add_argument("--use-infomax-loss", default=True, action='store_true',
                         help="use infomax task supervision")
-    parser.add_argument("--use-reconstruction-loss", default=True, action='store_true',
+    parser.add_argument("--use-reconstruction-loss", default=False, action='store_true',
                         help="use feature reconstruction task supervision")
     parser.add_argument("--node-masking", default=False, action='store_true',
                         help="mask a subset of node features")
@@ -366,10 +471,10 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'wn18','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'imdb_preprocessed','--encoder', 'RGCN'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
-    main(args)
+    fit(args)
 
     '''
     # perform edge neighborhood sampling to generate training graph and data

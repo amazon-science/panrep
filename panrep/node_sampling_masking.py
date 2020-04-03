@@ -3,6 +3,7 @@ import copy
 import torch
 import numpy as np
 import dgl
+import time
 import itertools
 def node_masker(old_g, num_nodes, masked_node_types,node_masking,use_reconstruction_loss):
     masked_nodes={}
@@ -83,7 +84,7 @@ class HeteroNeighborSampler:
         return seeds, blocks
 
 
-class PanRepNeighborSampler:
+class InfomaxNodeRecNeighborSampler:
     def __init__(self, g, fanouts, device, full_neighbor=False):
         """
         if fanouts is None, sample full neighbor
@@ -118,7 +119,7 @@ class PanRepNeighborSampler:
             if self.full_neighbor:
                 frontier = dgl.in_subgraph(self.g, cur)
             else:
-                frontier = dgl.sampling.sample_neighbors(self.g, cur, fanout)
+                frontier = dgl.setype_key_mapampling.sample_neighbors(self.g, cur, fanout)
             block = dgl.to_block(frontier, cur)
 
             cur = {}
@@ -137,6 +138,188 @@ class PanRepNeighborSampler:
         for i in range(len(blocks)):
             blocks[i] = blocks[i].to(device)
         return seeds, blocks
+class PanRepSampler:
+    def __init__(self, g, num_edges, etypes, etype_map, phead_ids, ptail_ids, fanouts,
+                 nhead_ids, ntail_ids, num_neg=None,device=None):
+        self.g = g
+        self.num_edges = num_edges
+        self.etypes = etypes
+        self.etype_map = etype_map
+        self.phead_ids = phead_ids
+        self.ptail_ids = ptail_ids
+        self.nhead_ids = nhead_ids
+        self.ntail_ids = ntail_ids
+        self.fanouts = fanouts
+        self.num_neg = num_neg
+        self.device=device
+
+    def sample_blocks(self, seeds):
+        block_sample_s=time.time()
+        bsize = len(seeds)
+        pseed = seeds
+        if self.num_neg is not None:
+            nseed = torch.randint(self.num_edges, (self.num_neg,))
+        else:
+            nseed = torch.randint(self.num_edges, (bsize,))
+        g = self.g
+        etypes = self.etypes
+        etype_map = self.etype_map
+        fanouts = self.fanouts
+        phead_ids = self.phead_ids
+        ptail_ids = self.ptail_ids
+        nhead_ids = self.nhead_ids
+        ntail_ids = self.ntail_ids
+
+        device=self.device
+        # positive seeds
+        pseed = torch.stack(pseed)
+        p_etypes = etypes[pseed]
+        phead_ids = phead_ids[pseed]
+        ptail_ids = ptail_ids[pseed]
+        # negative seeds
+        # Negative examples should be perturbed, here it does not seem that they are
+        n_etypes = etypes[nseed]
+        nhead_ids = nhead_ids[nseed]
+        ntail_ids = ntail_ids[nseed]
+
+        p_edges = {}
+        p_subg = []
+        for key, canonical_etypes in etype_map.items():
+            pe_loc = (p_etypes == key)
+            # extract the ids corresponding to the specific canonical type
+            p_head = phead_ids[pe_loc]
+            p_tail = ptail_ids[pe_loc]
+            if p_head.shape[0] == 0:
+                continue
+            # input the edges in a dictionary of edges
+            p_edges[canonical_etypes] = (p_head, p_tail)
+            if canonical_etypes[0] == canonical_etypes[2]:
+                # positive subgraph (of the same node type)
+                p_subg.append(dgl.graph((p_head, p_tail),
+                                        canonical_etypes[0],
+                                        canonical_etypes[1],
+                                        g.number_of_nodes(canonical_etypes[0])))
+            else:
+                # positive subgraph with different node types
+                p_subg.append(dgl.bipartite((p_head, p_tail),
+                                            utype=canonical_etypes[0],
+                                            etype=canonical_etypes[1],
+                                            vtype=canonical_etypes[2],
+                                            card=(g.number_of_nodes(canonical_etypes[0]),
+                                                  g.number_of_nodes(canonical_etypes[2]))))
+        n_subg = []
+        # build the negative subgraphs
+        for key, canonical_etypes in etype_map.items():
+            ne_loc = (n_etypes == key)
+            n_head = nhead_ids[ne_loc]
+            n_tail = ntail_ids[ne_loc]
+            if n_head.shape[0] == 0:
+                continue
+
+            if canonical_etypes[0] == canonical_etypes[2]:
+                n_subg.append(dgl.graph((n_head, n_tail),
+                                        canonical_etypes[0],
+                                        canonical_etypes[1],
+                                        g.number_of_nodes(canonical_etypes[0])))
+            else:
+                n_subg.append(dgl.bipartite((n_head, n_tail),
+                                            utype=canonical_etypes[0],
+                                            etype=canonical_etypes[1],
+                                            vtype=canonical_etypes[2]),
+                              card=(g.number_of_nodes(canonical_etypes[0]),
+                                    g.number_of_nodes(canonical_etypes[2])))
+        # build the heterograph from the subgraphs
+        p_g = dgl.hetero_from_relations(p_subg)
+        n_g = dgl.hetero_from_relations(n_subg)
+        p_g = dgl.compact_graphs(p_g)
+        n_g = dgl.compact_graphs(n_g)
+
+        pg_seed = {}
+        ng_seed = {}
+        # obtain the node internal ID to map back to the full HeteroGraph
+        # The original IDs are preserved because they always keep the total number of nodes in the subgraph
+        # the same as in the original graph
+        for ntype in p_g.ntypes:
+            pg_seed[ntype] = p_g.nodes[ntype].data[dgl.NID]
+        for ntype in n_g.ntypes:
+            ng_seed[ntype] = n_g.nodes[ntype].data[dgl.NID]
+
+        p_blocks = []
+        n_blocks = []
+        p_cur = pg_seed
+        n_cur = ng_seed
+        frontier_s=time.time()
+        for i, fanout in enumerate(fanouts):
+            if fanout is None:
+                p_frontier = dgl.in_subgraph(g, p_cur)
+                n_frontier = dgl.in_subgraph(g, n_cur)
+            else:
+                p_frontier = dgl.sampling.sample_neighbors(g, p_cur, fanout)
+                n_frontier = dgl.sampling.sample_neighbors(g, n_cur, fanout)
+            # all the positive edges are removed among the positive seeds nodes in the first layer
+            if i == 0 and len(p_edges) > 0:
+                # remove edges here
+                edge_to_del = {}
+
+                for canonical_etype, pairs in p_edges.items():
+                    eid_to_del = p_frontier.edge_ids(pairs[0],
+                                                     pairs[1],
+                                                     force_multi=True,
+                                                     etype=canonical_etype)[2]
+
+                    if eid_to_del.shape[0] > 0:
+                        '''
+                        if p_frontier.number_of_edges(canonical_etype) == eid_to_del.shape[0]:
+                            print("All will be deleted {} {}/{}, skip".format(canonical_etype,
+                                                                              eid_to_del.shape[0], 
+                                                                              p_frontier.number_of_edges(canonical_etype)))
+                            continue
+                        '''
+                        edge_to_del[canonical_etype] = eid_to_del
+                old_frontier = p_frontier
+                p_frontier = dgl.remove_edges(old_frontier, edge_to_del)
+
+            p_block = dgl.to_block(p_frontier, p_cur)
+            p_cur = {}
+            for ntype in p_block.srctypes:
+                p_cur[ntype] = p_block.srcnodes[ntype].data[dgl.NID]
+            p_blocks.insert(0, p_block)
+
+            n_block = dgl.to_block(n_frontier, n_cur)
+            n_cur = {}
+            for ntype in n_block.srctypes:
+                n_cur[ntype] = n_block.srcnodes[ntype].data[dgl.NID]
+            n_blocks.insert(0, n_block)
+        # add features to block nodes in first layer only ?
+        frontier_time=time.time()-frontier_s
+        cops=time.time()
+        for ntype in p_blocks[0].ntypes:
+            if g.nodes[ntype].data.get("h_f", None) is not None:
+                p_blocks[0].srcnodes[ntype].data['h_f']=g.nodes[ntype].data['h_f'][
+                    p_blocks[0].srcnodes[ntype].data['_ID']]
+        for ntype in n_blocks[0].ntypes:
+            if g.nodes[ntype].data.get("h_f", None) is not None:
+                n_blocks[0].srcnodes[ntype].data['h_f']=g.nodes[ntype].data['h_f'][
+                    n_blocks[0].srcnodes[ntype].data['_ID']]
+        for ntype in p_blocks[-1].ntypes:
+            if g.nodes[ntype].data.get("h_f", None) is not None:
+                p_blocks[-1].dstnodes[ntype].data['h_f']=g.nodes[ntype].data['h_f'][
+                    p_blocks[-1].dstnodes[ntype].data['_ID']]
+        time_copy=time.time()-cops
+
+        for i in range(len(n_blocks)):
+            n_blocks[i] = n_blocks[i].to(device)
+        for i in range(len(p_blocks)):
+            p_blocks[i] = p_blocks[i].to(device)
+        block_sample_time=time.time()-block_sample_s
+        #print('copy time')
+        #print(time_copy)
+        #print('frontier calculation time')
+        #print(frontier_time)
+        #print('overal sampling time')
+        #print(block_sample_time)
+
+        return (bsize, p_g, n_g, p_blocks, n_blocks)
 
 def unmask_nodes(g,masked_node_types):
     for ntype in g.ntypes:

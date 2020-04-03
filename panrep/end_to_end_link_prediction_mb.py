@@ -7,206 +7,27 @@ Difference compared to tkipf/relation-gcn
 * l2norm applied to all weights
 * remove nodes that won't be touched
 """
-from node_sampling_masking import  node_masker
 
 import argparse,gc
-import numpy as np
+
 import time
 import torch
 import torch.nn.functional as F
-from dgl import DGLGraph
-import dgl
-from classifiers import ClassifierRGCN,ClassifierMLP
-from load_data import load_kaggle_shoppers_data, load_wn_data,load_imdb_data,load_link_pred_wn_data
+
+from load_data import load_hetero_link_pred_data
 from torch.utils.data import DataLoader
-import utils
-from classifiers import DLinkPredictor as DownstreamLinkPredictor
 from classifiers import DLinkPredictorMB as DownstreamLinkPredictorMB
-from edge_masking_samling import hetero_edge_masker_sampler,create_edge_mask,unmask_edges,RGCNLinkRankSampler
+from edge_masking_samling import RGCNLinkRankSampler
 
 def main(args):
     best_mrr, best_result=fit(args)
     print('Best results')
     print(best_result)
 
-def args_fit(args):
-        torch.multiprocessing.set_sharing_strategy('file_system')
-
-        if args.dataset == "wn":
-            train_edges, test_edges, valid_edges, train_g,valid_g,test_g, featless_node_types = load_link_pred_wn_data(args)
-        else:
-            raise NotImplementedError
-
-        #train_g, subg_types = _dataset.train_g
-        #valid_g, _ = _dataset.valid_g
-        #test_g, _ = _dataset.test_g
-        num_rels = len(list(train_edges.keys()))
-        valid_set = valid_edges
-        train_set =train_edges
-        test_set=test_edges
-
-        # hyper params
-        fanout=20
-        batch_size = int(16*1024)
-        chunk_size = 32
-        use_self_loop = True
-        regularization_coef = 0.001
-        train_grad_clip = 1.0
-        fanouts = [fanout] * args.n_layers
-        # this are tripplets containing src id rel id and dest id
-
-        num_edges = 0
-        etype_map = {}
-        etype_key_map = {}
-        etypes = []
-        head_ids = []
-        tail_ids = []
-        eids = []
-        i = 0
-        # key is (src_type, label, dst_type)
-        for key, val in train_set.items():
-            etype_map[i] = key
-            etype_key_map[key] = i
-            n_edges = val[0].shape[0]
-            etypes.append(torch.full((n_edges,), i))
-            head_ids.append(val[0])
-            tail_ids.append(val[1])
-            num_edges += n_edges
-            i += 1
-
-        print("Total number of edges {}/{}".format(num_edges, i))
-        etypes = torch.cat(etypes, dim=0)
-        head_ids = torch.cat(head_ids, dim=0)
-        tail_ids = torch.cat(tail_ids, dim=0)
-        etypes.share_memory_()
-        head_ids.share_memory_()
-        tail_ids.share_memory_()
-        pos_seed = torch.arange((num_edges // batch_size) * batch_size)
-
-        sampler = RGCNLinkRankSampler(train_g,
-                                      num_edges,
-                                      etypes,
-                                      etype_map,
-                                      head_ids,
-                                      tail_ids,
-                                      fanouts,
-                                      nhead_ids=head_ids,
-                                      ntail_ids=tail_ids)
-        dataloader = DataLoader(dataset=pos_seed,
-                                batch_size=batch_size,
-                                collate_fn=sampler.sample_blocks,
-                                shuffle=True,
-                                pin_memory=True,
-                                drop_last=True,
-                                num_workers=0)
-
-
-
-
-
-        # check cuda
-        use_cuda = args.gpu >= 0 and torch.cuda.is_available()
-        if use_cuda:
-            torch.cuda.set_device(args.gpu)
-
-        # map input features as embeddings
-        # build input layer
-        model = DownstreamLinkPredictorMB(test_g,
-                            args.gpu,
-                            args.n_hidden,
-                            num_rels,
-                            num_bases=args.n_bases,
-                            num_hidden_layers=args.n_layers,
-                            dropout=args.dropout,
-                            use_self_loop=use_self_loop,
-                            regularization_coef=regularization_coef)
-        # optimizer
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-
-        # training loop
-        print("start training...")
-        dur = []
-        for epoch in range(args.n_epochs):
-            model.train()
-            if epoch > 3:
-                t0 = time.time()
-            for i, sample_data in enumerate(dataloader):
-                bsize, p_g, n_g, p_blocks, n_blocks = sample_data
-
-                p_h, n_h = model(p_blocks, n_blocks)
-                for ntype, emb in p_h.items():
-                    p_g.nodes[ntype].data['h'] = emb
-                for ntype, emb in n_h.items():
-                    n_g.nodes[ntype].data['h'] = emb
-                p_head_emb = []
-                p_tail_emb = []
-                rids = []
-                for canonical_etype in p_g.canonical_etypes:
-                    head, tail = p_g.all_edges(etype=canonical_etype)
-                    head_emb = p_g.nodes[canonical_etype[0]].data['h'][head]
-                    tail_emb = p_g.nodes[canonical_etype[2]].data['h'][tail]
-                    idx = etype_key_map[canonical_etype]
-                    rids.append(torch.full((head_emb.shape[0],), idx, dtype=torch.long))
-                    p_head_emb.append(head_emb)
-                    p_tail_emb.append(tail_emb)
-                n_head_emb = []
-                n_tail_emb = []
-                for canonical_etype in n_g.canonical_etypes:
-                    head, tail = n_g.all_edges(etype=canonical_etype)
-                    head_emb = n_g.nodes[canonical_etype[0]].data['h'][head]
-                    tail_emb = n_g.nodes[canonical_etype[2]].data['h'][tail]
-                    n_head_emb.append(head_emb)
-                    n_tail_emb.append(tail_emb)
-                p_head_emb = torch.cat(p_head_emb, dim=0)
-                p_tail_emb = torch.cat(p_tail_emb, dim=0)
-                rids = torch.cat(rids, dim=0)
-                n_head_emb = torch.cat(n_head_emb, dim=0)
-                n_tail_emb = torch.cat(n_tail_emb, dim=0)
-                assert p_head_emb.shape[0] == p_tail_emb.shape[0]
-                assert rids.shape[0] == p_head_emb.shape[0]
-                assert n_head_emb.shape[0] == n_tail_emb.shape[0]
-                n_shuffle_seed = torch.randperm(n_head_emb.shape[0])
-                n_head_emb = n_head_emb[n_shuffle_seed]
-                n_tail_emb = n_tail_emb[n_shuffle_seed]
-
-                loss = model.get_loss(p_head_emb,
-                                      p_tail_emb,
-                                      n_head_emb,
-                                      n_tail_emb,
-                                      rids,
-                                      int(batch_size / chunk_size),
-                                      chunk_size,
-                                      chunk_size)
-                loss.backward()
-                optimizer.step()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), train_grad_clip)
-                t1 = time.time()
-
-                print("Epoch {}, Iter {}, Loss:{}".format(epoch, i, loss.detach()))
-
-            if epoch > 3:
-                dur.append(t1 - t0)
-
-            p_g = None
-            n_g = None
-            p_blocks = None
-            n_blocks = None
-            gc.collect()
-            _eval_mrr(model, valid_g, [train_set, valid_set], valid_set, neg_cnt=1000)
-
-
 def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,args):
     torch.multiprocessing.set_sharing_strategy('file_system')
 
-    if args.dataset == "wn":
-        train_edges, test_edges, valid_edges, train_g, valid_g, test_g, featless_node_types = load_link_pred_wn_data(
-            args)
-    else:
-        raise NotImplementedError
-
-    # train_g, subg_types = _dataset.train_g
-    # valid_g, _ = _dataset.valid_g
-    # test_g, _ = _dataset.test_g
+    train_edges, test_edges, valid_edges, train_g, valid_g, test_g, featless_node_types=load_hetero_link_pred_data(args)
     num_rels = len(list(train_edges.keys()))
     valid_set = valid_edges
     train_set = train_edges
@@ -214,7 +35,7 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,args):
 
     # hyper params
     fanout = fanout
-    batch_size = int(16 * 1024)
+    batch_size = int(1024)
     chunk_size = 32
     use_self_loop = True
     regularization_coef = 0.0001
@@ -249,7 +70,11 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,args):
     head_ids.share_memory_()
     tail_ids.share_memory_()
     pos_seed = torch.arange((num_edges // batch_size) * batch_size)
-
+    # check cuda
+    use_cuda = args.gpu >= 0 and torch.cuda.is_available()
+    if use_cuda:
+        torch.cuda.set_device(args.gpu)
+    device = torch.device("cuda:" + str(args.gpu) if use_cuda else "cpu")
     sampler = RGCNLinkRankSampler(train_g,
                                   num_edges,
                                   etypes,
@@ -257,6 +82,7 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,args):
                                   head_ids,
                                   tail_ids,
                                   fanouts,
+                                  device=device,
                                   nhead_ids=head_ids,
                                   ntail_ids=tail_ids)
     dataloader = DataLoader(dataset=pos_seed,
@@ -267,10 +93,6 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,args):
                             drop_last=True,
                             num_workers=0)
 
-    # check cuda
-    use_cuda = args.gpu >= 0 and torch.cuda.is_available()
-    if use_cuda:
-        torch.cuda.set_device(args.gpu)
 
     # map input features as embeddings
     # build input layer
@@ -282,7 +104,7 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,args):
                                       num_hidden_layers=n_layers,
                                       dropout=dropout,
                                       use_self_loop=use_self_loop,
-                                      regularization_coef=regularization_coef)
+                                      regularization_coef=regularization_coef,etype_key_map=etype_key_map)
     # optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
@@ -296,47 +118,11 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,args):
         for i, sample_data in enumerate(dataloader):
             bsize, p_g, n_g, p_blocks, n_blocks = sample_data
 
-            p_h, n_h = model(p_blocks, n_blocks)
-            for ntype, emb in p_h.items():
-                p_g.nodes[ntype].data['h'] = emb
-            for ntype, emb in n_h.items():
-                n_g.nodes[ntype].data['h'] = emb
-            p_head_emb = []
-            p_tail_emb = []
-            rids = []
-            for canonical_etype in p_g.canonical_etypes:
-                head, tail = p_g.all_edges(etype=canonical_etype)
-                head_emb = p_g.nodes[canonical_etype[0]].data['h'][head]
-                tail_emb = p_g.nodes[canonical_etype[2]].data['h'][tail]
-                idx = etype_key_map[canonical_etype]
-                rids.append(torch.full((head_emb.shape[0],), idx, dtype=torch.long))
-                p_head_emb.append(head_emb)
-                p_tail_emb.append(tail_emb)
-            n_head_emb = []
-            n_tail_emb = []
-            for canonical_etype in n_g.canonical_etypes:
-                head, tail = n_g.all_edges(etype=canonical_etype)
-                head_emb = n_g.nodes[canonical_etype[0]].data['h'][head]
-                tail_emb = n_g.nodes[canonical_etype[2]].data['h'][tail]
-                n_head_emb.append(head_emb)
-                n_tail_emb.append(tail_emb)
-            p_head_emb = torch.cat(p_head_emb, dim=0)
-            p_tail_emb = torch.cat(p_tail_emb, dim=0)
-            rids = torch.cat(rids, dim=0)
-            n_head_emb = torch.cat(n_head_emb, dim=0)
-            n_tail_emb = torch.cat(n_tail_emb, dim=0)
-            assert p_head_emb.shape[0] == p_tail_emb.shape[0]
-            assert rids.shape[0] == p_head_emb.shape[0]
-            assert n_head_emb.shape[0] == n_tail_emb.shape[0]
-            n_shuffle_seed = torch.randperm(n_head_emb.shape[0])
-            n_head_emb = n_head_emb[n_shuffle_seed]
-            n_tail_emb = n_tail_emb[n_shuffle_seed]
+            p_h= model(p_blocks)
+            n_h=model(n_blocks)
 
-            loss = model.get_loss(p_head_emb,
-                                  p_tail_emb,
-                                  n_head_emb,
-                                  n_tail_emb,
-                                  rids,
+            # loss calculation
+            loss = model.get_loss(p_h, p_g, n_h,n_g,
                                   int(batch_size / chunk_size),
                                   chunk_size,
                                   chunk_size)
@@ -359,13 +145,13 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,args):
     return model
 
 def fit(args):
-        n_epochs_list = [100,250,400]
-        n_hidden_list = [100, 200]
+        n_epochs_list = [1,400,600]
+        n_hidden_list = [400,600]
         n_layers_list = [2]
-        n_bases_list = [50]
-        lr_list = [1e-3,5e-4]
+        n_bases_list = [30]
+        lr_list = [1e-4,1e-5]
         dropout_list = [0.2]
-        fanout_list = [20, 40]
+        fanout_list = [None]
 
         rgcn_results = []
         best_mrr = .0
@@ -378,8 +164,8 @@ def fit(args):
                         for fanout in fanout_list:
                             for lr in lr_list:
                                 for dropout in dropout_list:
-                                    model=_fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,args)
-                                    mrr = _eval(model,args)
+                                    model, test_g, train_set, valid_set,  test_set=_fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,args)
+                                    mrr = _eval(model, test_g, train_set, valid_set,  test_set)
                                     result = "RGCN Model, n_epochs {}; n_hidden {}; n_layers {}; n_bases {}; " \
                                             "fanout {}; lr {}; dropout {} acc {}".format(n_epochs,
                                                                                          n_hidden,
@@ -449,6 +235,11 @@ def _eval_mrr(model, test_g, data_sets, test_set, neg_cnt=1000):
 
         batch_size = 1000
         fanouts = [20] * model.num_hidden_layers
+        # check cuda
+        use_cuda = args.gpu >= 0 and torch.cuda.is_available()
+        if use_cuda:
+            torch.cuda.set_device(args.gpu)
+        device = torch.device("cuda:" + str(args.gpu) if use_cuda else "cpu")
         eval_sampler = RGCNLinkRankSampler(test_g,
                                            num_edges,
                                            etypes,
@@ -456,7 +247,7 @@ def _eval_mrr(model, test_g, data_sets, test_set, neg_cnt=1000):
                                            test_head_ids,
                                            test_tail_ids,
                                            fanouts,
-                                           nhead_ids=head_ids,
+                                   device=device, nhead_ids=head_ids,
                                            ntail_ids=tail_ids,
                                            num_neg=neg_cnt)
         dataloader = DataLoader(dataset=seed,
@@ -474,7 +265,8 @@ def _eval_mrr(model, test_g, data_sets, test_set, neg_cnt=1000):
         for i, sample_data in enumerate(dataloader):
             bsize, p_g, n_g, p_blocks, n_blocks = sample_data
 
-            p_h, n_h = model(p_blocks, n_blocks)
+            p_h = model(p_blocks)
+            n_h = model(n_blocks)
             for ntype, emb in p_h.items():
                 p_g.nodes[ntype].data['h'] = emb
             for ntype, emb in n_h.items():
@@ -547,18 +339,8 @@ def _eval_mrr(model, test_g, data_sets, test_set, neg_cnt=1000):
         return metrics['MRR']
     
     
-def _eval(_model,args):
-        if args.dataset == "wn":
-            train_edges, test_edges, valid_edges, train_g, valid_g, test_g, featless_node_types = load_link_pred_wn_data(
-                args)
-        else:
-            raise NotImplementedError
-        model = _model
+def _eval(model, test_g, train_set, valid_set,  test_set):
 
-
-        train_set = train_edges
-        valid_set = valid_edges
-        test_set = test_edges
         return _eval_mrr(model, test_g, [train_set, valid_set, test_set], test_set)
 
 
@@ -569,7 +351,7 @@ if __name__ == '__main__':
             help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=100,
             help="number of hidden units") # use 16, 2 for debug
-    parser.add_argument("--gpu", type=int, default=0,
+    parser.add_argument("--gpu", type=int, default=7,
             help="gpu")
     parser.add_argument("--grad-norm", type=float, default=1.0,
             help="norm to clip gradient to")
@@ -625,7 +407,7 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'wn','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'query_biodata','--encoder', 'RGCN'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     main(args)
