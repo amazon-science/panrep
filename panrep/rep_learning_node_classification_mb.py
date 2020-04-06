@@ -71,7 +71,7 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_pre
         load_hetero_data(args)
 
     # sampler parameters
-    batch_size = 5000
+    batch_size = 1024
     l2norm=0.0001
 
     # check cuda
@@ -243,16 +243,16 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_pre
         feats[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
 
 def fit(args):
-        n_epochs_list = [100,200,400]
-        n_hidden_list = [50,150,300]
-        n_layers_list = [2,3]
+        n_epochs_list = [1]#[100,200,400]
+        n_hidden_list = [100]#[50,150,300]
+        n_layers_list = [2]#[2,3]
         n_bases_list = [30]
         lr_list = [1e-4]
         dropout_list = [0.2]
         fanout_list = [None]
         use_link_prediction_list = [False]
-        use_reconstruction_loss_list = [True, False]
-        use_infomax_loss_list = [True, False]
+        use_reconstruction_loss_list =[True] #[True, False]
+        use_infomax_loss_list = [True]#[True, False]
         use_node_motif_list = [True]
         mask_links_list = [False]
         use_self_loop_list=[False]

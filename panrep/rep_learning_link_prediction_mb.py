@@ -50,8 +50,8 @@ def main(args):
 @profile
 def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
          use_link_prediction,use_reconstruction_loss,use_infomax_loss,mask_links,use_node_motif,args):
-
     torch.multiprocessing.set_sharing_strategy('file_system')
+
 
 
     train_edges, test_edges, valid_edges, train_g, valid_g, test_g, masked_node_types = load_hetero_link_pred_data(

@@ -108,6 +108,7 @@ class InfomaxNodeRecNeighborSampler:
         seeds={}
         g=self.g
         device=self.device
+        block_sample_s=time.time()
         seeds_list.sort()
         for s in seeds_list:
             nid,ntype=self.hetero_map[s]
@@ -118,6 +119,7 @@ class InfomaxNodeRecNeighborSampler:
         for ntype in seeds:
             seeds[ntype]=torch.tensor(seeds[ntype])#.to(device)
         cur = seeds
+        frontier_time_s=time.time()
         for fanout in self.fanouts:
             if self.full_neighbor:
                 frontier = dgl.in_subgraph(self.g, cur)
@@ -129,7 +131,9 @@ class InfomaxNodeRecNeighborSampler:
             for ntype in block.srctypes:
                 cur[ntype] = block.srcnodes[ntype].data[dgl.NID]
             blocks.insert(0, block)
+        frontier_time=time.time()-frontier_time_s
         # add features to block nodes in first layer only ?
+        time_copy_s=time.time()
         for ntype in blocks[0].ntypes:
             if g.nodes[ntype].data.get("h_f", None) is not None:
                 blocks[0].srcnodes[ntype].data['h_f']=g.nodes[ntype].data['h_f'][
@@ -142,8 +146,17 @@ class InfomaxNodeRecNeighborSampler:
             if g.nodes[ntype].data.get("motifs", None) is not None:
                 blocks[-1].dstnodes[ntype].data['motifs']=g.nodes[ntype].data['motifs'][
                     blocks[-1].dstnodes[ntype].data['_ID']]
+        time_copy=time.time()-time_copy_s
         for i in range(len(blocks)):
             blocks[i] = blocks[i].to(device)
+
+        block_sample_time=time.time()-block_sample_s
+        print('copy time')
+        print(time_copy)
+        print('frontier calculation time')
+        print(frontier_time)
+        print('overal sampling time')
+        print(block_sample_time)
         return seeds, blocks
 
 class PanRepSampler:
@@ -325,12 +338,12 @@ class PanRepSampler:
         for i in range(len(p_blocks)):
             p_blocks[i] = p_blocks[i].to(device)
         block_sample_time=time.time()-block_sample_s
-        #print('copy time')
-        #print(time_copy)
-        #print('frontier calculation time')
-        #print(frontier_time)
-        #print('overal sampling time')
-        #print(block_sample_time)
+        print('copy time')
+        print(time_copy)
+        print('frontier calculation time')
+        print(frontier_time)
+        print('overal sampling time')
+        print(block_sample_time)
 
         return (bsize, p_g, n_g, p_blocks, n_blocks)
 
