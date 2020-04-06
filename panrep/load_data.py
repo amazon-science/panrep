@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from dgl.contrib.data import load_data
 from sklearn.model_selection import StratifiedShuffleSplit,train_test_split
-
+from statistics import median
 def load_hetero_data(args):
     if args.dataset == "kaggle_shoppers":
         train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_kaggle_shoppers_data(args)
@@ -17,13 +17,16 @@ def load_hetero_data(args):
         train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_imdb_data(args)
     elif args.dataset == "imdb_preprocessed":
         train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_imdb_preprocessed_data(args)
+    elif args.dataset == "dblp_preprocessed":
+        train_idx, test_idx, val_idx, labels, g, category, num_classes, masked_node_types = load_dblp_preprocessed_data(
+            args)
     else:
         raise NotImplementedError
     return train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types
 
 def load_hetero_link_pred_data(args):
-    if args.dataset == "wn":
-        train_edges, test_edges, valid_edges, train_g, valid_g, test_g, featless_node_types = load_link_pred_wn_data(
+    if args.dataset == "wn18":
+        train_edges, test_edges, valid_edges, train_g, valid_g, test_g, featless_node_types = load_link_pred_wn_pick_data(
             args)
     elif args.dataset == "query_biodata":
         train_edges, test_edges, valid_edges, train_g, valid_g, test_g, featless_node_types = load_link_pred_query_biodata_data(
@@ -69,43 +72,109 @@ def load_link_pred_query_biodata_data(args):
     # In[13]:
 
     g = pickle.load(open(os.path.join(data_folder, 'graph.pickle'), "rb")).to(torch.device("cpu"))
-    link_pred_splits=pickle.load(open(os.path.join(data_folder, 'link_pred_splits.pickle'), "rb"))#.to(torch.device("cpu"))
-    #TODO finish the split of the edges check the saurav code
     #get eid from heterograph and use dgl.edge_subgraph
-    train = 0.8
-    test= 0.5
-    num_nodes_per_types={}
-    for ntype in g.ntypes:
-        num_nodes_per_types[ntype]=g.number_of_nodes(ntype)
-    # In[14]:
-    etype_to_canonical={}
-    for i, etype in enumerate(g.etypes):
-        etype_to_canonical[etype]=g.canonical_etypes[i]
+    train_pct = 0.8
+    val_pct= 0.1
+    #train_g,valid_g,test_g,train_edges,valid_edges,test_edges=create_edge_graph_splits(g,train_pct,val_pct,data_folder)
 
-    train_edges=triplets_to_dict(link_pred_splits['tr'],etype_to_canonical)
-    test_edges = triplets_to_dict(link_pred_splits['test'],etype_to_canonical)
-    valid_edges =triplets_to_dict( link_pred_splits['val'],etype_to_canonical)
-    train_g=dgl.heterograph(train_edges,num_nodes_per_types)
+    splits_dir=pickle.load(open(os.path.join(data_folder, 'splits_dir.pickle'), "rb"))
+    train_g=splits_dir['train_g']
+    valid_g=splits_dir['valid_g']
+    test_g=splits_dir['test_g']
+    train_edges=splits_dir['train_edges']
+    valid_edges=splits_dir['valid_edges']
+    test_edges=splits_dir['test_edges']
+    featless_node_types=[]
+
+    return train_edges, test_edges, valid_edges, train_g,valid_g,test_g, featless_node_types
+
+def create_edge_graph_splits(g,train_pct,val_pct,directory):
+    num_nodes_per_types = {}
+    for ntype in g.ntypes:
+        num_nodes_per_types[ntype] = g.number_of_nodes(ntype)
+
+    train_edges = {}
+    valid_edges = {}
+    test_edges = {}
+    for c_etype in g.canonical_etypes:
+        etyp_eids = g.all_edges(form='uv', etype=c_etype)
+        n_edges = etyp_eids[0].size(0)
+        perm = torch.randperm(n_edges)
+        train_id = perm[:int(n_edges * train_pct)]
+        val_id = perm[int(n_edges * train_pct):int(n_edges * (train_pct + val_pct))]
+        test_id = perm[int(n_edges * (train_pct + val_pct)):]
+        edges = list(tuple(zip(etyp_eids[0].cpu().numpy(), etyp_eids[1].cpu().numpy())))
+        train_edges[c_etype] = [edges[i] for i in train_id.numpy().astype(int)]
+        valid_edges[c_etype] = [edges[i] for i in val_id.numpy().astype(int)]
+        test_edges[c_etype] = [edges[i] for i in test_id.numpy().astype(int)]
+
+    train_g = dgl.heterograph(train_edges, num_nodes_per_types)
     valid_g = dgl.heterograph(valid_edges, num_nodes_per_types)
     test_g = dgl.heterograph(test_edges, num_nodes_per_types)
-    # remove last feature
-    g.nodes[ntype].data['features']=g.nodes[ntype].data['features'][:,:-1]
-    use_feats=True
-    if use_feats:
-        for ntype in g.ntypes:
-            if g.nodes[ntype].data.get("features", None) is not None:
-                train_g.nodes[ntype].data['h_f'] = g.nodes[ntype].data['features']
-                valid_g.nodes[ntype].data['h_f'] = g.nodes[ntype].data['features']
-                test_g.nodes[ntype].data['h_f'] = g.nodes[ntype].data['features']
-    # Create the train, valid, test graphs
     for e in train_edges.keys():
-        train_edges[e]=torch.tensor(train_edges[e]).long().transpose(1,0)
+        train_edges[e] = torch.tensor(train_edges[e]).long().transpose(1, 0)
     for e in valid_edges.keys():
-        valid_edges[e]=torch.tensor(valid_edges[e]).long().transpose(1,0)
+        valid_edges[e] = torch.tensor(valid_edges[e]).long().transpose(1, 0)
     for e in test_edges.keys():
-        test_edges[e]=torch.tensor(test_edges[e]).long().transpose(1,0)
+        test_edges[e] = torch.tensor(test_edges[e]).long().transpose(1, 0)
+    for ntype in g.ntypes:
+        if g.nodes[ntype].data.get("h_f", None) is not None:
+            train_g.nodes[ntype].data['h_f'] = g.nodes[ntype].data['h_f']
+            valid_g.nodes[ntype].data['h_f'] = g.nodes[ntype].data['h_f']
+            test_g.nodes[ntype].data['h_f'] = g.nodes[ntype].data['h_f']
+    splits_dir={"train_g":train_g,"valid_g":valid_g,"test_g":test_g,"train_edges":train_edges,
+                "valid_edges":valid_edges,"test_edges":test_edges,}
+    pickle.dump(splits_dir, open(os.path.join(directory, "splits_dir.pickle"), "wb"),
+                protocol=4);
 
-    featless_node_types=[]
+    return train_g,valid_g,test_g,train_edges,valid_edges,test_edges
+
+def keep_frequent_motifs(g):
+    # keeps columns where the number of nonzero is more than 10% of the nodes
+    for ntype in g.ntypes:
+        num_motifs = g.nodes[ntype].data['motifs'].shape[1]
+        num_nodes = g.nodes[ntype].data['motifs'].shape[0]
+        to_keep_inds = []
+        for i in range(num_motifs):
+            nnz = len(torch.nonzero(g.nodes[ntype].data['motifs'][:, i]))
+            if nnz > num_nodes / 10:
+                to_keep_inds += [i]
+        print('Motifs to keep')
+        print(to_keep_inds)
+        g.nodes[ntype].data['motifs'] = g.nodes[ntype].data['motifs'][:, to_keep_inds]
+    return g
+
+def motif_distribution_to_zero_one(g):
+    # convert the motif distribution to high (1) and low (0) values
+    for ntype in g.ntypes:
+        num_motifs = g.nodes[ntype].data['motifs'].shape[1]
+        for i in range(num_motifs):
+            med = median(g.nodes[ntype].data['motifs'][:, i])
+            g.nodes[ntype].data['motifs'][:, i]=(g.nodes[ntype].data['motifs'][:, i]>med).float()
+            print('Median motif value')
+            print(med)
+    # TODO possibly filter out again the frequent nonzero columns
+    #  g=keep_frequent_motifs(g)
+    return g
+
+def load_link_pred_wn_pick_data(args):
+    data_folder = "../data/kg/wn18/"
+
+    # In[13]:
+
+    data = pickle.load(open(os.path.join(data_folder, 'data_lp_motifs.pickle'), "rb"))
+    train_edges=data["train_edges"]
+    test_edges=data["test_edges"]
+    valid_edges=data["valid_edges"]
+    train_g=data["train_g"]
+    valid_g = data["valid_g"]
+    test_g=data["test_g"]
+    featless_node_types=data["featless_node_types"]
+    src_id=data["src_id"]
+    dest_id=data["dest_id"]
+    edata=data["edata"]
+    for ntype in train_g.ntypes:
+        train_g.nodes[ntype].data['motifs']=train_g.nodes[ntype].data['motifs'].float()
 
     return train_edges, test_edges, valid_edges, train_g,valid_g,test_g, featless_node_types
 
@@ -141,7 +210,7 @@ def load_link_pred_wn_data(args):
 
     # In[12]:
 
-    data_folder = "../data/kg/wn18/"
+    data_folder = "../../data/kg/wn18/"
 
     # In[13]:
 
@@ -233,6 +302,7 @@ def load_wn_data(args):
     for ntype in g.ntypes:
         if g.nodes[ntype].data.get("features", None) is not None:
             g.nodes[ntype].data['h_f'] = g.nodes[ntype].data['features']
+
     featless_node_types = []
     if num_classes>1:
         labels_n = torch.zeros((np.shape(labels)[0], num_classes))
@@ -308,6 +378,7 @@ def load_kaggle_shoppers_data(args):
     num_classes=1
     featless_node_types = ['brand', 'customer', 'chain', 'market', 'dept', 'category', 'company']
     return train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types
+
 def load_imdb_preprocessed_data(args):
     use_cuda = args.gpu
     check_cuda = torch.cuda.is_available()
@@ -333,7 +404,15 @@ def load_imdb_preprocessed_data(args):
 
     # In[13]:
     # load to cpu for very large graphs
-    G = pickle.load(open(os.path.join(data_folder, 'graph.pickle'), "rb")).to(torch.device("cpu"))
+    if args.use_node_motifs:
+        G = pickle.load(open(os.path.join(data_folder, 'graph_node_motifs.pickle'), "rb")).to(torch.device("cpu"))
+        for ntype in G.ntypes:
+            G.nodes[ntype].data['motifs'] = G.nodes[ntype].data['motifs'].float()
+        G=keep_frequent_motifs(G)
+        G=motif_distribution_to_zero_one(G)
+    else:
+        G = pickle.load(open(os.path.join(data_folder, 'graph.pickle'), "rb")).to(torch.device("cpu"))
+
     labels = pickle.load(open(os.path.join(data_folder, 'labels.pickle'), "rb"))
     train_val_test_idx = np.load(data_folder + 'train_val_test_idx.npz')
 
@@ -361,6 +440,68 @@ def load_imdb_preprocessed_data(args):
         labels_n = labels
     labels = labels_n
     featless_node_types = []
+    return train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types
+
+def load_dblp_preprocessed_data(args):
+    use_cuda = args.gpu
+    check_cuda = torch.cuda.is_available()
+    if use_cuda < 0:
+        check_cuda = False;
+    device = torch.device("cuda:" + str(use_cuda) if check_cuda else "cpu")
+    print("Using device", device)
+    cpu_device = torch.device("cpu");
+
+    # In[10]:
+
+    seed = 0;
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    torch.backends.cudnn.deterministic = True
+
+    # In[12]:
+
+    data_folder = "../data/dblp_preprocessed/"
+
+    # In[13]:
+    # load to cpu for very large graphs
+    if args.use_node_motifs:
+        G = pickle.load(open(os.path.join(data_folder, 'graph_node_motifs.pickle'), "rb")).to(torch.device("cpu"))
+        for ntype in G.ntypes:
+            G.nodes[ntype].data['motifs'] = G.nodes[ntype].data['motifs'].float()
+        G = keep_frequent_motifs(G)
+        G = motif_distribution_to_zero_one(G)
+    else:
+        G = pickle.load(open(os.path.join(data_folder, 'graph.pickle'), "rb")).to(torch.device("cpu"))
+    labels = pickle.load(open(os.path.join(data_folder, 'labels.pickle'), "rb"))
+    train_val_test_idx = np.load(data_folder + 'train_val_test_idx.npz')
+
+    print(G)
+
+
+    print(labels)
+
+    train_idx = train_val_test_idx['train_idx']
+    val_idx = train_val_test_idx['val_idx']
+    test_idx = train_val_test_idx['test_idx']
+
+    train_idx = np.array(train_idx)
+    test_idx = np.array(test_idx)
+    val_idx = np.array(val_idx)
+    category='author'
+    num_classes = 4
+    if num_classes > 1:
+        labels_n = torch.zeros((np.shape(labels)[0], num_classes))
+        if check_cuda:
+            labels_n.cuda()
+        for i in range(np.shape(labels)[0]):
+            labels_n[i, int(labels[i])] = 1
+    else:
+        labels_n = labels
+    labels = labels_n
+    featless_node_types = ['conference']
     return train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types
 
 def load_imdb_data(args):

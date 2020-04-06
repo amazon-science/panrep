@@ -5,6 +5,9 @@ import numpy as np
 import dgl
 import time
 import itertools
+import line_profiler
+profile = line_profiler.LineProfiler()
+
 def node_masker(old_g, num_nodes, masked_node_types,node_masking,use_reconstruction_loss):
     masked_nodes={}
     if not use_reconstruction_loss:
@@ -135,9 +138,14 @@ class InfomaxNodeRecNeighborSampler:
             if g.nodes[ntype].data.get("h_f", None) is not None:
                 blocks[-1].dstnodes[ntype].data['h_f']=g.nodes[ntype].data['h_f'][
                     blocks[-1].dstnodes[ntype].data['_ID']]
+        for ntype in blocks[-1].ntypes:
+            if g.nodes[ntype].data.get("motifs", None) is not None:
+                blocks[-1].dstnodes[ntype].data['motifs']=g.nodes[ntype].data['motifs'][
+                    blocks[-1].dstnodes[ntype].data['_ID']]
         for i in range(len(blocks)):
             blocks[i] = blocks[i].to(device)
         return seeds, blocks
+
 class PanRepSampler:
     def __init__(self, g, num_edges, etypes, etype_map, phead_ids, ptail_ids, fanouts,
                  nhead_ids, ntail_ids, num_neg=None,device=None):
@@ -153,6 +161,7 @@ class PanRepSampler:
         self.num_neg = num_neg
         self.device=device
 
+    @profile
     def sample_blocks(self, seeds):
         block_sample_s=time.time()
         bsize = len(seeds)
@@ -304,6 +313,10 @@ class PanRepSampler:
         for ntype in p_blocks[-1].ntypes:
             if g.nodes[ntype].data.get("h_f", None) is not None:
                 p_blocks[-1].dstnodes[ntype].data['h_f']=g.nodes[ntype].data['h_f'][
+                    p_blocks[-1].dstnodes[ntype].data['_ID']]
+        for ntype in p_blocks[-1].ntypes:
+            if g.nodes[ntype].data.get("motifs", None) is not None:
+                p_blocks[-1].dstnodes[ntype].data['motifs']=g.nodes[ntype].data['motifs'][
                     p_blocks[-1].dstnodes[ntype].data['_ID']]
         time_copy=time.time()-cops
 

@@ -35,12 +35,13 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,args):
 
     # hyper params
     fanout = fanout
-    batch_size = int(1024)
+    batch_size = int(32*1024)
     chunk_size = 32
     use_self_loop = True
     regularization_coef = 0.0001
     train_grad_clip = 1.0
     fanouts = [fanout] * n_layers
+    edge_masking=True
     # this are tripplets containing src id rel id and dest id
 
     num_edges = 0
@@ -84,7 +85,7 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,args):
                                   fanouts,
                                   device=device,
                                   nhead_ids=head_ids,
-                                  ntail_ids=tail_ids)
+                                  ntail_ids=tail_ids,edge_masking=edge_masking)
     dataloader = DataLoader(dataset=pos_seed,
                             batch_size=batch_size,
                             collate_fn=sampler.sample_blocks,
@@ -135,7 +136,6 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,args):
 
         if epoch > 3:
             dur.append(t1 - t0)
-
         p_g = None
         n_g = None
         p_blocks = None
@@ -146,7 +146,7 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,args):
 
 def fit(args):
         n_epochs_list = [1,400,600]
-        n_hidden_list = [400,600]
+        n_hidden_list = [40,400,600]
         n_layers_list = [2]
         n_bases_list = [30]
         lr_list = [1e-4,1e-5]

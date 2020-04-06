@@ -29,9 +29,10 @@ from sklearn.metrics import f1_score, normalized_mutual_info_score, adjusted_ran
 from sklearn.cluster import KMeans
 from sklearn.svm import LinearSVC
 
-def extract_embed(node_embed, block, permute=False):
+def extract_embed(node_embed, block,masked_node_types=[], permute=False):
     emb = {}
     for ntype in block.srctypes:
+
         nid = block.srcnodes[ntype].data[dgl.NID]
         if permute:
             perm = torch.randperm(node_embed[ntype].shape[0])
@@ -65,7 +66,7 @@ def evaluate(model, seeds, blocks, node_embed, labels, category, use_cuda):
     return loss, acc
 
 def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_prediction, use_reconstruction_loss,
-         use_infomax_loss, mask_links,use_self_loop, args):
+         use_infomax_loss, mask_links,use_self_loop,use_node_motif, args):
     train_idx, test_idx, val_idx, labels, g, category, num_classes, masked_node_types=\
         load_hetero_data(args)
 
@@ -94,12 +95,22 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_pre
     link_prediction = use_link_prediction
     mask_links = mask_links
 
-    #g.adjacency_matrix(transpose=True,scipy_fmt='coo',etype='customer_to_transaction')
 
     # for the embedding layer
     in_size_dict={}
     for name in g.ntypes:
-        in_size_dict[name] = g.nodes[name].data['h_f'].size(1);
+        if name not in masked_node_types:
+            in_size_dict[name] = g.nodes[name].data['h_f'].size(1)
+        else:
+            in_size_dict[name] =0
+
+    # for the motif layer
+
+    out_motif_dict = {}
+    if use_node_motif:
+        for name in g.ntypes:
+            out_motif_dict[name] = g.nodes[name].data['motifs'].size(1)
+
     ntype2id = {}
     for i, ntype in enumerate(g.ntypes):
             ntype2id[ntype] = i
@@ -139,14 +150,17 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_pre
                              loss_over_all_nodes=loss_over_all_nodes,
                              use_infomax_task=use_infomax_loss,
                              use_reconstruction_task=use_reconstruction_loss,
+                             use_node_motif=use_node_motif,
                              link_prediction_task=link_prediction,
+                             out_motif_dict=out_motif_dict,
                              use_cuda=use_cuda)
 
     if use_cuda:
         model.cuda()
     node_embed={}
     for ntype in g.ntypes:
-       node_embed[ntype]=g.nodes[ntype].data['h_f']
+        if ntype not in masked_node_types:
+            node_embed[ntype]=g.nodes[ntype].data['h_f']
 
 
     if len(labels.shape)>1:
@@ -187,23 +201,18 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_pre
 
         optimizer.zero_grad()
         for i, (seeds, blocks) in enumerate(loader):
-            emb = extract_embed(node_embed, blocks[0], permute=False)
-
-            perm_emb = extract_perm_embed(node_embed, blocks[0], use_infomax_loss=use_infomax_loss)
-
-            # TODO embedding to be masked must have only the target nodes for now masked emb not used
-            #  these have to be loaded in the block[0]
-            masked_nodes, masked_emb= node_masker_mb(emb, num_masked_nodes, masked_node_types,node_masking)
+            #emb = extract_embed(node_embed, blocks[0], permute=False)
+            #perm_emb = extract_perm_embed(node_embed, blocks[0], use_infomax_loss=use_infomax_loss)
+            #masked_nodes, masked_emb= node_masker_mb(emb, num_masked_nodes, masked_node_types,node_masking)
 
             if link_prediction:
                 raise NotImplementedError
 
-            if use_cuda:
-                #masked_emb = {k: e.cuda() for k, e in masked_emb.items()}
-                perm_emb={k: e.cuda() for k, e in perm_emb.items()}
+            #if use_cuda:
+            #    #masked_emb = {k: e.cuda() for k, e in masked_emb.items()}
+            #    perm_emb={k: e.cuda() for k, e in perm_emb.items()}
 
-            loss, embeddings = model.forward_mb(perm_emb=perm_emb, p_blocks=blocks,
-                                                masked_nodes=masked_nodes)
+            loss, embeddings = model.forward_mb(p_blocks=blocks)
             loss.backward()
             optimizer.step()
 
@@ -234,16 +243,17 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_pre
         feats[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
 
 def fit(args):
-        n_epochs_list = [200,400, 600]
-        n_hidden_list = [100,300,500]
+        n_epochs_list = [100,200,400]
+        n_hidden_list = [50,150,300]
         n_layers_list = [2,3]
         n_bases_list = [30]
-        lr_list = [1e-4, 1e-5]
+        lr_list = [1e-4]
         dropout_list = [0.2]
         fanout_list = [None]
         use_link_prediction_list = [False]
         use_reconstruction_loss_list = [True, False]
         use_infomax_loss_list = [True, False]
+        use_node_motif_list = [True]
         mask_links_list = [False]
         use_self_loop_list=[False]
         for n_epochs in n_epochs_list:
@@ -258,27 +268,32 @@ def fit(args):
                                             for use_reconstruction_loss in use_reconstruction_loss_list:
                                                 for mask_links in mask_links_list:
                                                     for use_self_loop in use_self_loop_list:
-                                                        if not use_reconstruction_loss and not use_infomax_loss and not use_link_prediction:
-                                                            continue
-                                                        else:
-                                                            _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
-                                                                     use_link_prediction, use_reconstruction_loss,
-                                                                     use_infomax_loss, mask_links, use_self_loop,args)
-                                                            result = "PanRep-RGCN Model, n_epochs {}; n_hidden {}; n_layers {}; n_bases {}; " \
-                                                                     "fanout {}; lr {}; dropout {} use_reconstruction_loss {} " \
-                                                                     "use_link_prediction {} use_infomax_loss {} mask_links {} use_self_loop {}".format(
-                                                                n_epochs,
-                                                                n_hidden,
-                                                                n_layers,
-                                                                n_bases,
-                                                                0,
-                                                                lr,
-                                                                dropout,
-                                                                use_reconstruction_loss,
-                                                                use_link_prediction,
-                                                                use_infomax_loss,
-                                                                mask_links,use_self_loop)
-                                                            print(result)
+                                                        for use_node_motif in use_node_motif_list:
+                                                            if not use_reconstruction_loss and not \
+                                                                    use_infomax_loss and not use_link_prediction\
+                                                                    and not use_node_motif:
+                                                                continue
+                                                            else:
+                                                                _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
+                                                                         use_link_prediction, use_reconstruction_loss,
+                                                                         use_infomax_loss, mask_links, use_self_loop,
+                                                                     use_node_motif,args)
+                                                                result = "PanRep-RGCN Model, n_epochs {}; n_hidden {}; n_layers {}; n_bases {}; " \
+                                                                         "fanout {}; lr {}; dropout {} use_reconstruction_loss {} " \
+                                                                         "use_link_prediction {} use_infomax_loss {} mask_links {} " \
+                                                                         "use_self_loop {} use_node_motif {}".format(
+                                                                    n_epochs,
+                                                                    n_hidden,
+                                                                    n_layers,
+                                                                    n_bases,
+                                                                    0,
+                                                                    lr,
+                                                                    dropout,
+                                                                    use_reconstruction_loss,
+                                                                    use_link_prediction,
+                                                                    use_infomax_loss,
+                                                                    mask_links,use_self_loop,use_node_motif)
+                                                                print(result)
 
         return
 
@@ -414,7 +429,7 @@ if __name__ == '__main__':
             help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=60,
             help="number of hidden units") # use 16, 2 for debug
-    parser.add_argument("--gpu", type=int, default=1,
+    parser.add_argument("--gpu", type=int, default=3,
             help="gpu")
     parser.add_argument("--lr", type=float, default=1e-3,
             help="learning rate")
@@ -458,7 +473,8 @@ if __name__ == '__main__':
                        help="use link prediction as supervision task")
     parser.add_argument("--mask-links", default=True, action='store_true',
                        help="mask the links to be predicted")
-
+    parser.add_argument("--use-node-motifs", default=True, action='store_true',
+                       help="use the node motifs")
     parser.add_argument("--batch-size", type=int, default=5000,
             help="Mini-batch size. If -1, use full graph training.")
     parser.add_argument("--model_path", type=str, default=None,

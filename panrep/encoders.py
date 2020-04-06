@@ -133,15 +133,19 @@ class EncoderRelGraphConvHetero(nn.Module):
         else:
             g = G
 
-        h_d = self.embed_layer(g)
+        h_d = self.embed_layer(g,full=True)
 
         for layer in self.layers:
             h = layer(g, h_d)
         return h
-    def forward_mb(self,blocks):
+    def forward_mb(self,blocks,permute=False):
 
         h = self.embed_layer(blocks[0])
 
+        if permute:
+            for key in h.keys():
+                perm = torch.randperm(h[key].shape[0])
+                h[key] = h[key][perm]
         for layer, block in zip(self.layers, blocks):
             h = layer.forward_mb(block, h)
         return h

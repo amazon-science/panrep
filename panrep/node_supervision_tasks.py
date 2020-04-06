@@ -186,6 +186,50 @@ class AttributeDecoder(nn.Module):
     def forward(self, h):
         h=self.reconstruction_layer(h)
         return h
+
+class NodeMotifDecoder(nn.Module):
+    def __init__(self, in_dim, h_dim, out_dict, distribution=False,activation=nn.ReLU(), single_layer=False):
+        '''
+
+        :param out_dim:
+        :param in_dim:
+        :param h_dim:
+        :param activation:
+        '''
+
+        super(NodeMotifDecoder, self).__init__()
+        self.activation=activation
+        self.h_dim=h_dim
+        self.weight=nn.ModuleDict()
+        self.single_layer=single_layer
+        self.distribution=distribution
+        layers=[]
+        for name in out_dict.keys():
+            layers=[]
+            if self.single_layer:
+                layers.append(nn.Linear( in_dim,  out_dict[name],bias=False))
+            else:
+                layers.append(nn.Linear( in_dim, self.h_dim))
+                layers.append(activation)
+                layers.append(nn.Linear( self.h_dim, out_dict[name],bias=False))
+            self.weight[name]=nn.Sequential(*layers)
+
+    def forward(self, g, h):
+        node_embed=h
+        loss=0
+        g = g.local_var()
+        for name in g.dsttypes:
+            if name in node_embed:
+                reconstructed=self.weight[name](node_embed[name])
+                if self.distribution:
+                    loss += F.mse_loss(reconstructed, g.dstnodes[name].data['motifs'])
+                else:
+                    loss += F.binary_cross_entropy_with_logits(reconstructed, g.dstnodes[name].data['motifs'])
+            #hs = [g.nodes[ntype].data['h'] for ntype in g.ntypes]
+
+        return loss
+
+
 class MultipleAttributeDecoder(nn.Module):
     def __init__(self, out_size_dict, in_size, h_dim, masked_node_types, loss_over_all_nodes,activation=nn.ReLU(),single_layer=False):
         '''

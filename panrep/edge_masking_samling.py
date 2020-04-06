@@ -41,7 +41,7 @@ def negative_sampling(g,pos_samples_d,  negative_rate):
 
 class RGCNLinkRankSampler:
     def __init__(self, g, num_edges, etypes, etype_map, phead_ids, ptail_ids, fanouts,
-                 nhead_ids, ntail_ids, num_neg=None,device=None):
+                 nhead_ids, ntail_ids, num_neg=None,device=None,edge_masking=True):
         self.g = g
         self.num_edges = num_edges
         self.etypes = etypes
@@ -53,6 +53,7 @@ class RGCNLinkRankSampler:
         self.fanouts = fanouts
         self.num_neg = num_neg
         self.device=device
+        self.edge_masking=edge_masking
 
     def sample_blocks(self, seeds):
         block_sample_s=time.time()
@@ -126,9 +127,9 @@ class RGCNLinkRankSampler:
                 n_subg.append(dgl.bipartite((n_head, n_tail),
                                             utype=canonical_etypes[0],
                                             etype=canonical_etypes[1],
-                                            vtype=canonical_etypes[2]),
+                                            vtype=canonical_etypes[2],
                               card=(g.number_of_nodes(canonical_etypes[0]),
-                                    g.number_of_nodes(canonical_etypes[2])))
+                                    g.number_of_nodes(canonical_etypes[2]))))
         # build the heterograph from the subgraphs
         p_g = dgl.hetero_from_relations(p_subg)
         n_g = dgl.hetero_from_relations(n_subg)
@@ -150,6 +151,7 @@ class RGCNLinkRankSampler:
         p_cur = pg_seed
         n_cur = ng_seed
         frontier_s=time.time()
+        del_time=0
         for i, fanout in enumerate(fanouts):
             if fanout is None:
                 p_frontier = dgl.in_subgraph(g, p_cur)
@@ -158,7 +160,9 @@ class RGCNLinkRankSampler:
                 p_frontier = dgl.sampling.sample_neighbors(g, p_cur, fanout)
                 n_frontier = dgl.sampling.sample_neighbors(g, n_cur, fanout)
             # all the positive edges are removed among the positive seeds nodes in the first layer
-            if i == 0 and len(p_edges) > 0:
+
+            if i == 0 and len(p_edges) > 0 and self.edge_masking:
+                del_time = time.time()
                 # remove edges here
                 edge_to_del = {}
 
@@ -179,6 +183,7 @@ class RGCNLinkRankSampler:
                         edge_to_del[canonical_etype] = eid_to_del
                 old_frontier = p_frontier
                 p_frontier = dgl.remove_edges(old_frontier, edge_to_del)
+                del_time = time.time()-del_time
 
             p_block = dgl.to_block(p_frontier, p_cur)
             p_cur = {}
@@ -209,12 +214,14 @@ class RGCNLinkRankSampler:
         for i in range(len(p_blocks)):
             p_blocks[i] = p_blocks[i].to(device)
         block_sample_time=time.time()-block_sample_s
-        #print('copy time')
-        #print(time_copy)
-        #print('frontier calculation time')
-        #print(frontier_time)
-        #print('overal sampling time')
-        #print(block_sample_time)
+        print('copy time')
+        print(time_copy)
+        print('frontier calculation time')
+        print(frontier_time)
+        print('edge deletion time')
+        print(del_time)
+        print('overal sampling time')
+        print(block_sample_time)
 
         return (bsize, p_g, n_g, p_blocks, n_blocks)
 

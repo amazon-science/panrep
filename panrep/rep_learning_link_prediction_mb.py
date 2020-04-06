@@ -15,7 +15,7 @@ import torch
 import torch.nn.functional as F
 from encoders import EncoderRelGraphConvHetero
 from model import PanRepRGCNHetero
-from load_data import load_link_pred_wn_data
+from load_data import load_hetero_link_pred_data
 from node_sampling_masking import node_masker_mb
 from torch.utils.data import DataLoader
 from classifiers import DLinkPredictorMB as DownstreamLinkPredictorMB
@@ -24,6 +24,8 @@ from node_sampling_masking import PanRepSampler
 from node_supervision_tasks import LinkPredictorDistMultMB
 import dgl
 import numpy as np
+import line_profiler
+profile = line_profiler.LineProfiler()
 
 def extract_embed(node_embed, block, permute=False):
     emb = {}
@@ -45,17 +47,16 @@ def main(args):
     best_mrr, best_result=fit(args)
     print('Best results')
     print(best_result)
-
+@profile
 def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
-         use_link_prediction,use_reconstruction_loss,use_infomax_loss,mask_links,args):
+         use_link_prediction,use_reconstruction_loss,use_infomax_loss,mask_links,use_node_motif,args):
 
     torch.multiprocessing.set_sharing_strategy('file_system')
 
-    if args.dataset == "wn":
-        train_edges, test_edges, valid_edges, train_g, valid_g, test_g, masked_node_types = load_link_pred_wn_data(
+
+    train_edges, test_edges, valid_edges, train_g, valid_g, test_g, masked_node_types = load_hetero_link_pred_data(
             args)
-    else:
-        raise NotImplementedError
+
     num_rels = len(list(train_edges.keys()))
     valid_set = valid_edges
     train_set = train_edges
@@ -107,7 +108,10 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
         tail_ids.append(val[1])
         num_edges += n_edges
         i += 1
-
+    out_motif_dict = {}
+    if use_node_motif:
+        for name in train_g.ntypes:
+            out_motif_dict[name] = train_g.nodes[name].data['motifs'].size(1)
     print("Total number of edges {}/{}".format(num_edges, i))
     etypes = torch.cat(etypes, dim=0)
     head_ids = torch.cat(head_ids, dim=0)
@@ -182,9 +186,9 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
                              masked_node_types=masked_node_types,
                              loss_over_all_nodes=loss_over_all_nodes,
                              use_infomax_task=use_infomax_loss,
-                             use_reconstruction_task=use_reconstruction_loss,
+                             use_reconstruction_task=use_reconstruction_loss,out_motif_dict=out_motif_dict,
                              link_prediction_task=link_prediction,
-                             use_cuda=use_cuda,link_predictor=link_predictor)
+                             use_cuda=use_cuda,use_node_motif=use_node_motif,link_predictor=link_predictor)
 
     if use_cuda:
         model.cuda()
@@ -202,20 +206,9 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
             t0 = time.time()
         for i, sample_data in enumerate(dataloader):
             bsize, p_g, n_g, p_blocks, n_blocks = sample_data
-            emb = extract_embed(node_embed, p_blocks[0], permute=False)
 
-            perm_emb = extract_perm_embed(node_embed, p_blocks[0], use_infomax_loss=use_infomax_loss)
-
-            # TODO embedding to be masked must have only the target nodes for now masked emb not used
-            #  these have to be loaded in the block[0]
-            masked_nodes, masked_emb= node_masker_mb(emb, num_masked_nodes, masked_node_types,node_masking)
-
-            if use_cuda:
-                #masked_emb = {k: e.cuda() for k, e in masked_emb.items()}
-                perm_emb={k: e.cuda() for k, e in perm_emb.items()}
-
-            loss, batch_universal_embeddings = model.forward_mb(perm_emb=perm_emb, p_blocks=p_blocks,
-                                                masked_nodes=masked_nodes,p_g=p_g,n_g=n_g,n_blocks=n_blocks,
+            loss, batch_universal_embeddings = model.forward_mb(p_blocks=p_blocks,
+                                                p_g=p_g,n_g=n_g,n_blocks=n_blocks,
                                                           num_chunks=int(batch_size/chunk_size),chunk_size=chunk_size,
                                                           neg_sample_size=chunk_size)
 
@@ -379,18 +372,19 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
         gc.collect()
         _eval_mrr(model, valid_g, [train_set, valid_set], valid_set, neg_cnt=1000)
     return model,test_g,train_set, valid_set, test_set
-
+@profile
 def fit(args):
-        n_epochs_list = [400,600]
-        n_hidden_list = [400,600]
+        n_epochs_list = [1]#[100,200]
+        n_hidden_list = [100]#[100,150]
         n_layers_list = [2]
         n_bases_list = [30]
-        lr_list = [1e-4,1e-5]
+        lr_list = [1e-4]#[1e-4,1e-5]
         dropout_list = [0.2]
         fanout_list = [None]
         use_link_prediction_list=[True]
-        use_reconstruction_loss_list=[True,False]
-        use_infomax_loss_list=[True,False]
+        use_reconstruction_loss_list=[True]#[True,False]
+        use_infomax_loss_list=[True]#[True,False]
+        use_node_motif_list=[True]
         mask_links_list=[True]
 
         rgcn_results = []
@@ -408,30 +402,34 @@ def fit(args):
                                         for use_link_prediction in use_link_prediction_list:
                                             for use_reconstruction_loss in use_reconstruction_loss_list:
                                                 for mask_links in mask_links_list:
-                                                    model,test_g,train_set, valid_set, test_set=\
-                                                        _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
-                                                    use_link_prediction,use_reconstruction_loss,use_infomax_loss,mask_links,args)
-                                                    mrr = _eval(model,test_g,train_set, valid_set, test_set)
-                                                    result = "PanRep-RGCN Model, n_epochs {}; n_hidden {}; n_layers {}; n_bases {}; " \
-                                                            "fanout {}; lr {}; dropout {} acc {} use_reconstruction_loss {} " \
-                                                             "use_link_prediction {} use_infomax_loss {} mask_links {}".format(n_epochs,
-                                                                                                         n_hidden,
-                                                                                                         n_layers,
-                                                                                                         n_bases,
-                                                                                                         0,
-                                                                                                         lr,
-                                                                                                         dropout,
-                                                                                                         mrr,
-                                                                                                         use_reconstruction_loss,
-                                                                                                         use_link_prediction,
-                                                                                                         use_infomax_loss,
-                                                                                                         mask_links)
-                                                    print(result)
-                                                rgcn_results.append(result)
-                                                if mrr > best_mrr:
-                                                    best_model = model
-                                                    best_result = result
-                                                    best_mrr = best_mrr
+                                                    for use_node_motif in use_node_motif_list:
+                                                        model,test_g,train_set, valid_set, test_set=\
+                                                            _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
+                                                        use_link_prediction,use_reconstruction_loss,use_infomax_loss,
+                                                                 mask_links,use_node_motif,args)
+                                                        mrr = _eval(model,test_g,train_set, valid_set, test_set)
+                                                        result = "PanRep-RGCN Model, n_epochs {}; n_hidden {}; n_layers {}; n_bases {}; " \
+                                                                "fanout {}; lr {}; dropout {} acc {} use_reconstruction_loss {} " \
+                                                                 "use_link_prediction {} use_" \
+                                                                 "infomax_loss {} mask_links {} use_node_motif {}".format(n_epochs,
+                                                                                                             n_hidden,
+                                                                                                             n_layers,
+                                                                                                             n_bases,
+                                                                                                             0,
+                                                                                                             lr,
+                                                                                                             dropout,
+                                                                                                             mrr,
+                                                                                                             use_reconstruction_loss,
+                                                                                                             use_link_prediction,
+                                                                                                             use_infomax_loss,
+                                                                                                             mask_links,
+                                                                                                             use_node_motif)
+                                                        print(result)
+                                                    rgcn_results.append(result)
+                                                    if mrr > best_mrr:
+                                                        best_model = model
+                                                        best_result = result
+                                                        best_mrr = best_mrr
 
         _all_results = rgcn_results
         _best_model = best_model
@@ -758,7 +756,7 @@ if __name__ == '__main__':
             help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=100,
             help="number of hidden units") # use 16, 2 for debug
-    parser.add_argument("--gpu", type=int, default=4,
+    parser.add_argument("--gpu", type=int, default=6,
             help="gpu")
     parser.add_argument("--grad-norm", type=float, default=1.0,
             help="norm to clip gradient to")
@@ -814,7 +812,7 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'wn','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'wn18','--encoder', 'RGCN'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     main(args)

@@ -470,7 +470,7 @@ class MiniBatchRelGraphEmbed(nn.Module):
                 nn.init.xavier_uniform_(embed)
             self.embeds[ntype] = embed
 
-    def forward(self, g):
+    def forward(self, g,full=False):
         """Forward computation
 
         Parameters
@@ -490,5 +490,8 @@ class MiniBatchRelGraphEmbed(nn.Module):
             if g.srcnodes[ntype].data.get('h_f', None) is not None:
                 emb[ntype] = g.srcnodes[ntype].data['h_f'] @ self.embeds[ntype]
             else:
-                emb[ntype] = self.embeds[ntype][g.srcnodes[ntype].data[dgl.NID]].to(self.device)
+                if not full:
+                    emb[ntype] = self.embeds[ntype][g.srcnodes[ntype].data[dgl.NID]]#.to(self.device)
+                else:
+                    emb[ntype] = self.embeds[ntype][torch.tensor(range(g.number_of_nodes(ntype)))]#.to("cpu"))
         return emb
