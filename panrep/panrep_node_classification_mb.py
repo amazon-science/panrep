@@ -203,8 +203,6 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
                         collate_fn=sampler.sample_blocks,
                         shuffle=True,
                         num_workers=0)
-    #TODO LOAD All data in GPU
-    #  Use validation set to supervise embeddings using the clustering accuracy loss and the others...
 
     # optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=l2norm)
@@ -231,80 +229,7 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
         if epoch % evaluate_every == 0:
             eval_panrep(model=model, dataloader=valid_loader)
 
-    ## Finetune PanRep
-    # add the target category in the sampler
-    sampler = InfomaxNodeRecNeighborSampler(g, [fanout] * (n_layers), device=device, full_neighbor=True,category=category)
-    fine_tune_loader = DataLoader(dataset=list(train_idx),
-                        batch_size=batch_size,
-                        collate_fn=sampler.sample_blocks,
-                        shuffle=True,
-                        num_workers=0)
 
-    # validation sampler
-    val_sampler = HeteroNeighborSampler(g, category, [fanout] * n_layers, True)
-    _, val_blocks = val_sampler.sample_blocks(val_idx)
-
-    # test sampler
-    test_sampler = HeteroNeighborSampler(g, category, [fanout] * n_layers, True)
-    _, test_blocks = test_sampler.sample_blocks(test_idx)
-
-    # optimizer
-
-    model.classifier=ClassifierMLP(input_size=n_hidden,hidden_size=n_hidden,out_size=num_classes)
-    #NodeClassifierRGCN(in_dim= n_hidden,out_dim=num_classes, rel_names=g.etypes,num_bases=n_bases)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=l2norm)
-    # training loop
-    print("start training...")
-    forward_time = []
-    backward_time = []
-    model.train()
-    if multilabel is False:
-        loss_func = torch.nn.CrossEntropyLoss()
-    else:
-        loss_func = torch.nn.BCEWithLogitsLoss()
-    # training loop
-    print("start training...")
-    dur = []
-    if use_cuda:
-        model.cuda()
-    labels=labels.float()
-    for epoch in range(n_fine_tune_epochs):
-        model.train()
-        optimizer.zero_grad()
-        if epoch > 3:
-            t0 = time.time()
-
-        for i, (seeds, blocks) in enumerate(fine_tune_loader):
-            batch_tic = time.time()
-            # need to copy the features
-            for i in range(len(blocks)):
-                blocks[i] = blocks[i].to(device)
-            #emb = extract_embed(node_embed, blocks[0])
-            lbl = labels[seeds[category]]
-            logits = model.classifier_forward_mb(blocks)[category]
-            loss = loss_func(logits, lbl)
-            loss.backward()
-            optimizer.step()
-
-            train_acc = torch.sum(logits.argmax(dim=1) == lbl.argmax(dim=1)).item() / len(seeds[category])
-            pred = torch.sigmoid(logits).detach().cpu().numpy()
-            try:
-                train_acc_auc = roc_auc_score(lbl.cpu().numpy(), pred)
-            except ValueError:
-                train_acc_auc=-1
-                pass
-            print("Epoch {:05d} | Batch {:03d} | Train Acc: {:.4f} |Train Acc AUC: {:.4f}| Train Loss: {:.4f} | Time: {:.4f}".
-                  format(epoch, i, train_acc,train_acc_auc, loss.item(), time.time() - batch_tic))
-
-        if epoch > 3:
-            dur.append(time.time() - t0)
-
-        val_loss, val_acc,val_acc_auc = evaluate(model, val_idx, val_blocks,device, labels, category,use_cuda)
-        print("Epoch {:05d} | Valid Acc: {:.4f} |Valid Acc Auc: {:.4f} | Valid loss: {:.4f} | Time: {:.4f}".
-              format(epoch, val_acc, val_acc_auc,val_loss.item(), np.average(dur)))
-    print()
-
-    # full graph evaluation here
     model.eval()
     if use_cuda:
         model.cpu()
@@ -312,22 +237,14 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
         g=g.to(torch.device("cpu"))
     with torch.no_grad():
         embeddings = model.encoder.forward(g)
-        logits=model.classifier_forward(g)[category]
 
-    acc = torch.sum(logits[test_idx].argmax(dim=1) == labels[test_idx].cpu().argmax(dim=1)).item() / len(test_idx)
-    print("Test accuracy: {:4f}".format(acc))
-    print("Mean forward time: {:4f}".format(np.mean(forward_time[len(forward_time) // 4:])))
-    print("Mean backward time: {:4f}".format(np.mean(backward_time[len(backward_time) // 4:])))
 
     feats = embeddings[category]
     #mlp_classifier(feats,use_cuda,args,num_classes,labels,train_idx,val_idx,test_idx,device)
     labels_i=np.argmax(labels.cpu().numpy(),axis=1)
     svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std,macro_str,micro_str = evaluate_results_nc(
         feats[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
-    print("With logits")
-    svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std, macro_str_log, micro_str_log = evaluate_results_nc(
-        logits[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
-    return "Test accuracy: {:4f} |".format(acc)+macro_str+micro_str+" Logits: "+macro_str_log+micro_str_log
+    return macro_str+micro_str+" Logits: "
 
 def fit(args):
         n_epochs_list = [2]#[250,300]
