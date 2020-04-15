@@ -14,7 +14,7 @@ import time
 import torch
 import torch.nn.functional as F
 from encoders import EncoderRelGraphConvHetero
-from model import PanRepRGCNHetero
+from model import PanRepHetero
 from load_data import load_hetero_link_pred_data
 from node_sampling_masking import node_masker_mb
 from torch.utils.data import DataLoader
@@ -24,8 +24,7 @@ from node_sampling_masking import PanRepSampler
 from node_supervision_tasks import LinkPredictorDistMultMB
 import dgl
 import numpy as np
-import line_profiler
-profile = line_profiler.LineProfiler()
+
 
 def extract_embed(node_embed, block, permute=False):
     emb = {}
@@ -47,13 +46,12 @@ def main(args):
     best_mrr, best_result=fit(args)
     print('Best results')
     print(best_result)
-@profile
 def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
-         use_link_prediction,use_reconstruction_loss,use_infomax_loss,mask_links,use_node_motif,args):
+         use_link_prediction,use_reconstruction_loss,use_infomax_loss,mask_links,use_node_motif,negative_sample,args):
     torch.multiprocessing.set_sharing_strategy('file_system')
+    num_workers = 32
 
-
-
+    args.use_node_motifs=use_node_motif
     train_edges, test_edges, valid_edges, train_g, valid_g, test_g, masked_node_types = load_hetero_link_pred_data(
             args)
 
@@ -77,7 +75,7 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
     link_prediction = use_link_prediction
     mask_links = mask_links
     # batch params
-    batch_size = int(1024)
+    batch_size = int(32*1024)
     chunk_size = 32
 
     # PanRep
@@ -119,11 +117,20 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
     etypes.share_memory_()
     head_ids.share_memory_()
     tail_ids.share_memory_()
+
     pos_seed = torch.arange((num_edges // batch_size) * batch_size)
     # check cuda
     use_cuda = args.gpu >= 0 and torch.cuda.is_available()
+    load_features_to_gpu=False
     if use_cuda:
         torch.cuda.set_device(args.gpu)
+        if load_features_to_gpu:
+            if args.use_node_motifs:
+                for ntype in train_g.ntypes:
+                    train_g.nodes[ntype].data['motifs'] = train_g.nodes[ntype].data.cuda()
+            for ntype in train_g.ntypes:
+                if train_g.nodes[ntype].data.get("h_f", None) is not None:
+                    train_g.nodes[ntype].data["h_f"] = train_g.nodes[ntype].data["h_f"].cuda()
     device = torch.device("cuda:" + str(args.gpu) if use_cuda else "cpu")
     sampler = PanRepSampler(train_g,
                                   num_edges,
@@ -141,7 +148,8 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
                             shuffle=True,
                             pin_memory=True,
                             drop_last=True,
-                            num_workers=0)
+                            num_workers=num_workers)
+
 
     # for the embedding layer
     in_size_dict = {}
@@ -174,7 +182,9 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
                                       dropout=dropout,
                                       use_self_loop=use_self_loop,
                                       regularization_coef=regularization_coef, etype_key_map=etype_key_map)
-    model = PanRepRGCNHetero(
+
+
+    model = PanRepHetero(
                              n_hidden,
                              n_hidden,
                              etypes=train_g.etypes,
@@ -202,10 +212,14 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
     dur = []
     for epoch in range(n_epochs):
         model.train()
-        if epoch > 0:
-            t0 = time.time()
+        #if epoch > 0:
+        t0 = time.time()
         for i, sample_data in enumerate(dataloader):
             bsize, p_g, n_g, p_blocks, n_blocks = sample_data
+            for i in range(len(n_blocks)):
+                n_blocks[i] = n_blocks[i].to(device)
+            for i in range(len(p_blocks)):
+                p_blocks[i] = p_blocks[i].to(device)
 
             loss, batch_universal_embeddings = model.forward_mb(p_blocks=p_blocks,
                                                 p_g=p_g,n_g=n_g,n_blocks=n_blocks,
@@ -223,8 +237,9 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
         p_blocks = None
         n_blocks = None
         gc.collect()
-        if epoch > 0:
-            dur.append(t1 - t0)
+        #if epoch > 0:
+        print("Time in PanRep epoch {}".format(t1 - t0))
+        dur.append(t1 - t0)
     # obtain the universal emdeddings from forward pass in cpu
     # full graph evaluation here
     print("Mean forward pass {}".format(np.mean(dur)))
@@ -320,7 +335,7 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
                             shuffle=True,
                             pin_memory=True,
                             drop_last=True,
-                            num_workers=0)
+                            num_workers=num_workers)
 
 
     # map input features as embeddings
@@ -342,10 +357,13 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
     dur = []
     for epoch in range(n_epochs):
         model.train()
-        if epoch > 1:
-            t0 = time.time()
+        t0 = time.time()
         for i, sample_data in enumerate(dataloader):
             bsize, p_g, n_g, p_blocks, n_blocks = sample_data
+            for i in range(len(n_blocks)):
+                n_blocks[i] = n_blocks[i].to(device)
+            for i in range(len(p_blocks)):
+                p_blocks[i] = p_blocks[i].to(device)
 
             p_h= model(p_blocks)
             n_h=model(n_blocks)
@@ -362,8 +380,8 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
 
             print("Epoch {}, Iter {}, Loss:{}".format(epoch, i, loss.detach()))
         t1 = time.time()
-        if epoch > 1:
-            dur.append(t1 - t0)
+        print("Time in RGCN epoch {}".format(t1 - t0))
+        dur.append(t1 - t0)
 
         p_g = None
         n_g = None
@@ -372,19 +390,19 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
         gc.collect()
         _eval_mrr(model, valid_g, [train_set, valid_set], valid_set, neg_cnt=1000)
     return model,test_g,train_set, valid_set, test_set
-@profile
 def fit(args):
-        n_epochs_list = [1]#[100,200]
+        n_epochs_list = [200,300]
         n_hidden_list = [100]#[100,150]
         n_layers_list = [2]
         n_bases_list = [30]
-        lr_list = [1e-4]#[1e-4,1e-5]
+        lr_list = [1e-3]#[1e-4,1e-5]
         dropout_list = [0.2]
-        fanout_list = [None]
+        fanout_list = [None,5]
+        negative_sample_list=[1]
         use_link_prediction_list=[True]
-        use_reconstruction_loss_list=[True]#[True,False]
-        use_infomax_loss_list=[True]#[True,False]
-        use_node_motif_list=[True]
+        use_reconstruction_loss_list=[True,False]
+        use_infomax_loss_list=[True,False]
+        use_node_motif_list=[False,True]
         mask_links_list=[True]
 
         rgcn_results = []
@@ -403,33 +421,35 @@ def fit(args):
                                             for use_reconstruction_loss in use_reconstruction_loss_list:
                                                 for mask_links in mask_links_list:
                                                     for use_node_motif in use_node_motif_list:
-                                                        model,test_g,train_set, valid_set, test_set=\
-                                                            _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
-                                                        use_link_prediction,use_reconstruction_loss,use_infomax_loss,
-                                                                 mask_links,use_node_motif,args)
-                                                        mrr = _eval(model,test_g,train_set, valid_set, test_set)
-                                                        result = "PanRep-RGCN Model, n_epochs {}; n_hidden {}; n_layers {}; n_bases {}; " \
-                                                                "fanout {}; lr {}; dropout {} acc {} use_reconstruction_loss {} " \
-                                                                 "use_link_prediction {} use_" \
-                                                                 "infomax_loss {} mask_links {} use_node_motif {}".format(n_epochs,
-                                                                                                             n_hidden,
-                                                                                                             n_layers,
-                                                                                                             n_bases,
-                                                                                                             0,
-                                                                                                             lr,
-                                                                                                             dropout,
-                                                                                                             mrr,
-                                                                                                             use_reconstruction_loss,
-                                                                                                             use_link_prediction,
-                                                                                                             use_infomax_loss,
-                                                                                                             mask_links,
-                                                                                                             use_node_motif)
-                                                        print(result)
-                                                    rgcn_results.append(result)
-                                                    if mrr > best_mrr:
-                                                        best_model = model
-                                                        best_result = result
-                                                        best_mrr = best_mrr
+                                                        for negative_sample in negative_sample_list:
+                                                            model,test_g,train_set, valid_set, test_set=\
+                                                                _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
+                                                            use_link_prediction,use_reconstruction_loss,use_infomax_loss,
+                                                                     mask_links,use_node_motif,negative_sample,args)
+                                                            mrr = _eval(model,test_g,train_set, valid_set, test_set)
+                                                            result = "PanRep-RGCN Model, n_epochs {}; n_hidden {}; n_layers {}; n_bases {}; " \
+                                                                    "fanout {}; lr {}; dropout {} negative_sample {} acc {} use_reconstruction_loss {} " \
+                                                                     "use_link_prediction {} use_" \
+                                                                     "infomax_loss {} mask_links {} use_node_motif {}".format(n_epochs,
+                                                                                                                 n_hidden,
+                                                                                                                 n_layers,
+                                                                                                                 n_bases,
+                                                                                                                 0,
+                                                                                                                 lr,
+                                                                                                                 dropout,
+                                                                                                                 negative_sample,
+                                                                                                                 mrr,
+                                                                                                                 use_reconstruction_loss,
+                                                                                                                 use_link_prediction,
+                                                                                                                 use_infomax_loss,
+                                                                                                                 mask_links,
+                                                                                                                 use_node_motif)
+                                                            print(result)
+                                                            rgcn_results.append(result)
+                                                            if mrr > best_mrr:
+                                                                best_model = model
+                                                                best_result = result
+                                                                best_mrr = best_mrr
 
         _all_results = rgcn_results
         _best_model = best_model
@@ -514,7 +534,10 @@ def _eval_mrr_panrep(model, test_g, data_sets, test_set, neg_cnt=1000,fanout=Non
     logs = []
     for i, sample_data in enumerate(dataloader):
         bsize, p_g, n_g, p_blocks, n_blocks = sample_data
-
+        for i in range(len(n_blocks)):
+            n_blocks[i] = n_blocks[i].to(device)
+        for i in range(len(p_blocks)):
+            p_blocks[i] = p_blocks[i].to(device)
         p_h = model.encoder.forward_mb(p_blocks)
         n_h = model.encoder.forward_mb(n_blocks)
         for ntype, emb in p_h.items():
@@ -666,7 +689,10 @@ def _eval_mrr(model, test_g, data_sets, test_set, neg_cnt=1000,fanout=None):
         logs = []
         for i, sample_data in enumerate(dataloader):
             bsize, p_g, n_g, p_blocks, n_blocks = sample_data
-
+            for i in range(len(n_blocks)):
+                n_blocks[i] = n_blocks[i].to(device)
+            for i in range(len(p_blocks)):
+                p_blocks[i] = p_blocks[i].to(device)
             p_h = model(p_blocks)
             n_h = model(n_blocks)
             for ntype, emb in p_h.items():

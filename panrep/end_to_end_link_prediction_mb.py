@@ -106,6 +106,9 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,args):
                                       dropout=dropout,
                                       use_self_loop=use_self_loop,
                                       regularization_coef=regularization_coef,etype_key_map=etype_key_map)
+
+    if use_cuda:
+        model.cuda()
     # optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
@@ -118,6 +121,10 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,args):
             t0 = time.time()
         for i, sample_data in enumerate(dataloader):
             bsize, p_g, n_g, p_blocks, n_blocks = sample_data
+            for i in range(len(n_blocks)):
+                n_blocks[i] = n_blocks[i].to(device)
+            for i in range(len(p_blocks)):
+                p_blocks[i] = p_blocks[i].to(device)
 
             p_h= model(p_blocks)
             n_h=model(n_blocks)

@@ -89,7 +89,6 @@ class EncoderRelGraphAttentionHetero(nn.Module):
 class EncoderRelGraphConvHetero(nn.Module):
     def __init__(self,
                  h_dim,
-                 in_size_dict,
                  etypes,
                  ntypes,
                  device,
@@ -107,9 +106,8 @@ class EncoderRelGraphConvHetero(nn.Module):
         self.dropout = dropout
 
         self.use_self_loop = use_self_loop
-        self.in_size_dict = in_size_dict
 
-        self.embed_layer = MiniBatchRelGraphEmbed(g=g,device=device,embed_size=h_dim)#EmbeddingLayer(self.in_size_dict, h_dim, ntypes)
+        self.embed_layer = MiniBatchRelGraphEmbed(g=g,device=device,embed_size=h_dim)
         self.layers = nn.ModuleList()
         # h2h
         for i in range(self.num_hidden_layers):
@@ -122,12 +120,12 @@ class EncoderRelGraphConvHetero(nn.Module):
         if corrupt:
             # create local variable do not permute the original graph
             g = G.local_var()
-            for key in self.in_size_dict:
+            for key in self.g.ntypes:
                 # TODO possibly high complexity here??
                 # The following implements the permutation of features within each node class.
                 # for the negative sample in the information maximization step
-                perm = torch.randperm(g.nodes[key].data['features'].shape[0])
-                g.nodes[key].data['features'] = g.nodes[key].data['features'][perm]
+                perm = torch.randperm(g.nodes[key].data['h_f'].shape[0])
+                g.nodes[key].data['h_f'] = g.nodes[key].data['h_f'][perm]
 
 
         else:
@@ -147,5 +145,6 @@ class EncoderRelGraphConvHetero(nn.Module):
                 perm = torch.randperm(h[key].shape[0])
                 h[key] = h[key][perm]
         for layer, block in zip(self.layers, blocks):
+            # print(h)
             h = layer.forward_mb(block, h)
         return h

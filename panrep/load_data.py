@@ -8,6 +8,14 @@ import torch
 from dgl.contrib.data import load_data
 from sklearn.model_selection import StratifiedShuffleSplit,train_test_split
 from statistics import median
+from scipy.cluster.vq import vq, kmeans2, whiten
+import pandas as pd
+def compute_cluster_assignemnts(features,cluster_number):
+    centroid, label = kmeans2(features,cluster_number,minit='points')
+    one_hot=pd.get_dummies(label)
+
+    return torch.tensor(one_hot.values).float()
+
 def load_hetero_data(args):
     if args.dataset == "kaggle_shoppers":
         train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_kaggle_shoppers_data(args)
@@ -19,6 +27,9 @@ def load_hetero_data(args):
         train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_imdb_preprocessed_data(args)
     elif args.dataset == "dblp_preprocessed":
         train_idx, test_idx, val_idx, labels, g, category, num_classes, masked_node_types = load_dblp_preprocessed_data(
+            args)
+    elif args.dataset == "imdb_pre_xiang":
+        train_idx, test_idx, val_idx, labels, g, category, num_classes, masked_node_types = load_imdb_prexiang_preprocessed_data(
             args)
     else:
         raise NotImplementedError
@@ -146,10 +157,17 @@ def keep_frequent_motifs(g):
 
 def motif_distribution_to_zero_one(g):
     # convert the motif distribution to high (1) and low (0) values
+    med=False
+    mean=True
     for ntype in g.ntypes:
         num_motifs = g.nodes[ntype].data['motifs'].shape[1]
         for i in range(num_motifs):
-            med = median(g.nodes[ntype].data['motifs'][:, i])
+            if med==True:
+                med = median(g.nodes[ntype].data['motifs'][:, i])
+            elif mean:
+                med = torch.mean(g.nodes[ntype].data['motifs'][:, i])
+            else:
+                med=0
             g.nodes[ntype].data['motifs'][:, i]=(g.nodes[ntype].data['motifs'][:, i]>med).float()
             print('Median motif value')
             print(med)
@@ -173,8 +191,15 @@ def load_link_pred_wn_pick_data(args):
     src_id=data["src_id"]
     dest_id=data["dest_id"]
     edata=data["edata"]
-    for ntype in train_g.ntypes:
-        train_g.nodes[ntype].data['motifs']=train_g.nodes[ntype].data['motifs'].float()
+    if args.use_node_motifs:
+        for ntype in train_g.ntypes:
+            train_g.nodes[ntype].data['motifs'] = train_g.nodes[ntype].data['motifs'].float()
+        train_g=keep_frequent_motifs(train_g)
+        train_g=motif_distribution_to_zero_one(train_g)
+    else:
+        for ntype in train_g.ntypes:
+            del train_g.nodes[ntype].data['motifs']
+
 
     return train_edges, test_edges, valid_edges, train_g,valid_g,test_g, featless_node_types
 
@@ -313,6 +338,11 @@ def load_wn_data(args):
     else:
         labels_n=labels
     labels=labels_n
+    if args.use_cluster:
+        for ntype in g.ntypes:
+            if g.nodes[ntype].data.get("h_f", None) is not None:
+                g.nodes[ntype].data['h_clusters']=compute_cluster_assignemnts(g.nodes[ntype].data['h_f'],cluster_number=args.num_clusters)
+
     return train_idx,test_idx,val_idx,labels,g,category,num_classes,featless_node_types
 def load_kaggle_shoppers_data(args):
     use_cuda = args.gpu
@@ -378,6 +408,68 @@ def load_kaggle_shoppers_data(args):
     num_classes=1
     featless_node_types = ['brand', 'customer', 'chain', 'market', 'dept', 'category', 'company']
     return train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types
+def load_imdb_prexiang_preprocessed_data(args):
+    use_cuda = args.gpu
+    check_cuda = torch.cuda.is_available()
+    if use_cuda < 0:
+        check_cuda = False;
+    device = torch.device("cuda:" + str(use_cuda) if check_cuda else "cpu")
+    print("Using device", device)
+    cpu_device = torch.device("cpu");
+
+    # In[10]:
+
+    seed = 0;
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    torch.backends.cudnn.deterministic = True
+
+    # In[12]:
+
+    data_folder = "../data/imdb_data/"
+
+    # In[13]:
+    # load to cpu for very large graphs
+    file='dgl-neptune-dataset.pickle'
+    G=None
+    dataset=pickle.load(open(os.path.join(data_folder, file), "rb"))
+    dataset
+
+
+
+    labels = pickle.load(open(os.path.join(data_folder, 'labels.pickle'), "rb"))
+    train_val_test_idx = np.load(data_folder + 'train_val_test_idx.npz')
+
+
+    print(labels)
+
+    train_idx = train_val_test_idx['train_idx']
+    val_idx = train_val_test_idx['val_idx']
+    test_idx = train_val_test_idx['test_idx']
+
+    train_idx = np.array(train_idx)
+    test_idx = np.array(test_idx)
+    val_idx = np.array(val_idx)
+    category='movie'
+    num_classes = 3
+    if num_classes > 1:
+        labels_n = torch.zeros((np.shape(labels)[0], num_classes))
+        if check_cuda:
+            labels_n.cuda()
+        for i in range(np.shape(labels)[0]):
+            labels_n[i, int(labels[i])] = 1
+    else:
+        labels_n = labels
+    labels = labels_n
+    featless_node_types = []
+    if args.use_cluster:
+        for ntype in G.ntypes:
+            if G.nodes[ntype].data.get("h_f", None) is not None:
+                G.nodes[ntype].data['h_clusters']=compute_cluster_assignemnts(G.nodes[ntype].data['h_f'],cluster_number=args.num_clusters)
+    return train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types
 
 def load_imdb_preprocessed_data(args):
     use_cuda = args.gpu
@@ -414,7 +506,10 @@ def load_imdb_preprocessed_data(args):
         G = pickle.load(open(os.path.join(data_folder, 'graph.pickle'), "rb")).to(torch.device("cpu"))
 
     labels = pickle.load(open(os.path.join(data_folder, 'labels.pickle'), "rb"))
-    train_val_test_idx = np.load(data_folder + 'train_val_test_idx.npz')
+    if args.split==5:
+        train_val_test_idx = np.load(data_folder + 'train_val_test_idx005.npz')
+    else:
+        train_val_test_idx = np.load(data_folder + 'train_val_test_idx.npz')
 
     print(G)
 
@@ -440,6 +535,10 @@ def load_imdb_preprocessed_data(args):
         labels_n = labels
     labels = labels_n
     featless_node_types = []
+    if args.use_cluster:
+        for ntype in G.ntypes:
+            if G.nodes[ntype].data.get("h_f", None) is not None:
+                G.nodes[ntype].data['h_clusters']=compute_cluster_assignemnts(G.nodes[ntype].data['h_f'],cluster_number=args.num_clusters)
     return train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types
 
 def load_dblp_preprocessed_data(args):
@@ -502,6 +601,10 @@ def load_dblp_preprocessed_data(args):
         labels_n = labels
     labels = labels_n
     featless_node_types = ['conference']
+    if args.use_cluster:
+        for ntype in G.ntypes:
+            if G.nodes[ntype].data.get("h_f", None) is not None:
+                G.nodes[ntype].data['h_clusters']=compute_cluster_assignemnts(G.nodes[ntype].data['h_f'],cluster_number=args.num_clusters)
     return train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types
 
 def load_imdb_data(args):
@@ -586,6 +689,10 @@ def load_imdb_data(args):
             G.nodes[ntype].data['h_f'] = G.nodes[ntype].data['features']
     num_classes=labels.shape[1]
     featless_node_types = []
+    if args.use_cluster:
+        for ntype in G.ntypes:
+            if G.nodes[ntype].data.get("h_f", None) is not None:
+                G.nodes[ntype].data['h_clusters']=compute_cluster_assignemnts(G.nodes[ntype].data['h_f'],cluster_number=args.num_clusters)
     return train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types
 
 

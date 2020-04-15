@@ -196,9 +196,11 @@ class EmbeddingLayer(nn.Module):
         })
 
     def forward(self, G):
+        hs={}
         for name in self.weight:
             G.apply_nodes(lambda nodes: {'h': self.weight[name](nodes.data['h_f'])}, ntype=name);
-        hs = [G.nodes[ntype].data['h'] for ntype in G.ntypes]
+        for ntype in self.weight:
+            hs[ntype]=G.nodes[ntype].data['h']
         return hs
     def forward_mb(self, embeddings):
         # TODO implement this layer

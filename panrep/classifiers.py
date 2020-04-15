@@ -274,7 +274,7 @@ class DLinkPredictorMB(nn.Module):
 
 
 class End2EndClassifierRGCN(nn.Module):
-    def __init__(self, h_dim, out_dim, num_rels,rel_names, num_bases,in_size_dict,ntypes,
+    def __init__(self, h_dim, out_dim, num_rels,rel_names, num_bases,g,device,
                  num_hidden_layers=1, dropout=0,
                  use_self_loop=False, use_cuda=False,h_dim_player=None):
         super(End2EndClassifierRGCN, self).__init__()
@@ -288,10 +288,9 @@ class End2EndClassifierRGCN(nn.Module):
         self.rel_names.sort()
         self.use_self_loop = use_self_loop
         self.use_cuda = use_cuda
-        self.in_size_dict = in_size_dict
         self.h_dim_player=h_dim_player
 
-        self.embed_layer = EmbeddingLayer(self.in_size_dict, h_dim, ntypes)
+        self.embed_layer = MiniBatchRelGraphEmbed(g=g,device=device,embed_size=h_dim)
         self.layers = nn.ModuleList()
         # h2h
         if h_dim_player is None:
@@ -311,7 +310,7 @@ class End2EndClassifierRGCN(nn.Module):
             self.h_dim, self.out_dim, self.rel_names, "basis",
             self.num_bases, activation=None,
             self_loop=self.use_self_loop))
-
+    '''
     def forward(self,g):
         h = self.embed_layer(g)
         for layer in self.layers:
@@ -319,6 +318,19 @@ class End2EndClassifierRGCN(nn.Module):
         return h
     def forward_mb(self, h, blocks):
         h = self.embed_layer.forward_mb(h)
+        for layer, block in zip(self.layers, blocks):
+            h = layer.forward_mb(block, h)
+        return h
+    '''
+    def forward(self,g):
+
+        h_d = self.embed_layer(g,full=True)
+        for layer in self.layers:
+            h = layer(g, h_d)
+        return h
+    def forward_mb(self,blocks):
+
+        h = self.embed_layer(blocks[0])
         for layer, block in zip(self.layers, blocks):
             h = layer.forward_mb(block, h)
         return h

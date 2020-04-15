@@ -18,7 +18,7 @@ from dgl import DGLGraph
 import copy
 from classifiers import ClassifierRGCN,ClassifierMLP
 from load_data import load_hetero_data
-from model import PanRepRGCNHetero
+from model import PanRepHetero
 from sklearn.metrics import roc_auc_score
 from node_supervision_tasks import reconstruction_loss
 from edge_masking_samling import hetero_edge_masker_sampler,create_edge_mask,unmask_edges
@@ -92,7 +92,7 @@ def rgcn_hetero(args):
                                             dropout=args.dropout,
                                             use_self_loop=args.use_self_loop)
 
-    model = PanRepRGCNHetero(
+    model = PanRepHetero(
                              args.n_hidden,
                              args.n_hidden,
                              etypes=g.etypes,

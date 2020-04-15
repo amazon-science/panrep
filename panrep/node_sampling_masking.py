@@ -5,8 +5,7 @@ import numpy as np
 import dgl
 import time
 import itertools
-import line_profiler
-profile = line_profiler.LineProfiler()
+
 
 def node_masker(old_g, num_nodes, masked_node_types,node_masking,use_reconstruction_loss):
     masked_nodes={}
@@ -72,6 +71,7 @@ class HeteroNeighborSampler:
 
     def sample_blocks(self, seeds):
         blocks = []
+        g=self.g
         seeds = {self.category : torch.tensor(seeds).long()}
         cur = seeds
         for fanout in self.fanouts:
@@ -84,11 +84,16 @@ class HeteroNeighborSampler:
             for ntype in block.srctypes:
                 cur[ntype] = block.srcnodes[ntype].data[dgl.NID]
             blocks.insert(0, block)
+        for ntype in blocks[0].ntypes:
+            if g.nodes[ntype].data.get("h_f", None) is not None:
+                blocks[0].srcnodes[ntype].data['h_f']=g.nodes[ntype].data['h_f'][
+                    blocks[0].srcnodes[ntype].data['_ID']]
+
         return seeds, blocks
 
 
 class InfomaxNodeRecNeighborSampler:
-    def __init__(self, g, fanouts, device, full_neighbor=False):
+    def __init__(self, g, fanouts, device, full_neighbor=False,category=None):
         """
         if fanouts is None, sample full neighbor
         """
@@ -96,6 +101,7 @@ class InfomaxNodeRecNeighborSampler:
         self.fanouts = fanouts
         self.device=device
         self.full_neighbor = full_neighbor
+        self.category = category
         #self.pct_batch=pct_batch
 
 
@@ -106,18 +112,21 @@ class InfomaxNodeRecNeighborSampler:
     def sample_blocks(self, seeds_list):
         blocks = []
         seeds={}
-        g=self.g
-        device=self.device
-        block_sample_s=time.time()
-        seeds_list.sort()
-        for s in seeds_list:
-            nid,ntype=self.hetero_map[s]
-            if ntype not in seeds:
-                seeds[ntype]=[nid]
-            else:
-                seeds[ntype]+=[nid]
-        for ntype in seeds:
-            seeds[ntype]=torch.tensor(seeds[ntype])#.to(device)
+        device = self.device
+        g = self.g
+        block_sample_s = time.time()
+        if self.category is None:
+            seeds_list.sort()
+            for s in seeds_list:
+                nid,ntype=self.hetero_map[s]
+                if ntype not in seeds:
+                    seeds[ntype]=[nid]
+                else:
+                    seeds[ntype]+=[nid]
+            for ntype in seeds:
+                seeds[ntype]=torch.tensor(seeds[ntype])#.to(device)
+        else:
+            seeds = {self.category: torch.tensor(seeds_list).long()}
         cur = seeds
         frontier_time_s=time.time()
         for fanout in self.fanouts:
@@ -142,6 +151,9 @@ class InfomaxNodeRecNeighborSampler:
             if g.nodes[ntype].data.get("h_f", None) is not None:
                 blocks[-1].dstnodes[ntype].data['h_f']=g.nodes[ntype].data['h_f'][
                     blocks[-1].dstnodes[ntype].data['_ID']]
+            if g.nodes[ntype].data.get("h_clusters", None) is not None:
+                blocks[-1].dstnodes[ntype].data['h_clusters']=g.nodes[ntype].data['h_clusters'][
+                    blocks[-1].dstnodes[ntype].data['_ID']]
         for ntype in blocks[-1].ntypes:
             if g.nodes[ntype].data.get("motifs", None) is not None:
                 blocks[-1].dstnodes[ntype].data['motifs']=g.nodes[ntype].data['motifs'][
@@ -151,12 +163,12 @@ class InfomaxNodeRecNeighborSampler:
             blocks[i] = blocks[i].to(device)
 
         block_sample_time=time.time()-block_sample_s
-        print('copy time')
-        print(time_copy)
-        print('frontier calculation time')
-        print(frontier_time)
-        print('overal sampling time')
-        print(block_sample_time)
+        #print('copy time')
+        #print(time_copy)
+        #print('frontier calculation time')
+        #print(frontier_time)
+        #print('overal sampling time')
+        #print(block_sample_time)
         return seeds, blocks
 
 class PanRepSampler:
@@ -174,7 +186,6 @@ class PanRepSampler:
         self.num_neg = num_neg
         self.device=device
 
-    @profile
     def sample_blocks(self, seeds):
         block_sample_s=time.time()
         bsize = len(seeds)
@@ -332,19 +343,15 @@ class PanRepSampler:
                 p_blocks[-1].dstnodes[ntype].data['motifs']=g.nodes[ntype].data['motifs'][
                     p_blocks[-1].dstnodes[ntype].data['_ID']]
         time_copy=time.time()-cops
-
-        for i in range(len(n_blocks)):
-            n_blocks[i] = n_blocks[i].to(device)
-        for i in range(len(p_blocks)):
-            p_blocks[i] = p_blocks[i].to(device)
         block_sample_time=time.time()-block_sample_s
+        '''
         print('copy time')
         print(time_copy)
         print('frontier calculation time')
         print(frontier_time)
         print('overal sampling time')
         print(block_sample_time)
-
+        '''
         return (bsize, p_g, n_g, p_blocks, n_blocks)
 
 def unmask_nodes(g,masked_node_types):

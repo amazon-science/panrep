@@ -5,19 +5,20 @@ from encoders import EncoderRGCN,EncoderRelGraphConvHetero
 from node_supervision_tasks import NodeMotifDecoder,MultipleAttributeDecoder\
     ,MutualInformationDiscriminator,LinkPredictor
 
-class PanRepRGCNHetero(nn.Module):
+class PanRepHetero(nn.Module):
     def __init__(self,
                  h_dim, out_dim,
                  encoder,
-                 in_size_dict,
+                 out_size_dict,
                  etypes,
                  ntype2id,
                  masked_node_types=[],
                  num_hidden_layers=1,
                  dropout=0, loss_over_all_nodes=False, use_reconstruction_task=True, use_infomax_task=True,
                  link_prediction_task=False,use_cuda=False,average_across_node_types=False,
-                 use_node_motif=False,link_predictor=None,out_motif_dict=None):
-        super(PanRepRGCNHetero, self).__init__()
+                 use_node_motif=False,link_predictor=None,out_motif_dict=None, use_cluster=False,
+                 single_layer=False,classifier=None):
+        super(PanRepHetero, self).__init__()
         self.h_dim = h_dim
         self.out_dim = out_dim
         self.num_hidden_layers = num_hidden_layers
@@ -27,6 +28,7 @@ class PanRepRGCNHetero(nn.Module):
         self.link_prediction_task=link_prediction_task
         self.loss_over_all_nodes=loss_over_all_nodes
         self.use_node_motif_task=use_node_motif
+        self.classifier=classifier
 
         self.infomax=MutualInformationDiscriminator(n_hidden=h_dim,average_across_node_types=average_across_node_types)
         self.use_cuda = use_cuda
@@ -43,15 +45,12 @@ class PanRepRGCNHetero(nn.Module):
                 and not self.link_prediction_task and not self.use_node_motif_task:
             raise ValueError("All losses disabled, can not train.")
         if self.use_reconstruction_task:
-            self.out_size_dict = {};
-            for name in in_size_dict.keys():
-                self.out_size_dict[name] =in_size_dict[name]
             self.attributeDecoder = MultipleAttributeDecoder(
-                out_size_dict=self.out_size_dict, in_size=self.h_dim, h_dim=h_dim,masked_node_types=masked_node_types,
-            loss_over_all_nodes=loss_over_all_nodes)
+                out_size_dict=out_size_dict, in_size=self.h_dim,
+                h_dim=h_dim,masked_node_types=masked_node_types,
+            loss_over_all_nodes=loss_over_all_nodes,single_layer=single_layer,use_cluster=use_cluster)
         if self.use_node_motif_task:
             self.nodeMotifDecoder=NodeMotifDecoder(in_dim=self.h_dim, h_dim=self.h_dim, out_dict=out_motif_dict)
-
 
     def forward(self, g, masked_nodes, sampled_links, sampled_link_labels):
 
@@ -75,7 +74,18 @@ class PanRepRGCNHetero(nn.Module):
             loss += link_prediction_loss
 
         return loss, positive
-
+    def classifier_forward_mb(self,p_blocks):
+        encoding=self.encoder.forward_mb(p_blocks)
+        logits={}
+        for ntype in encoding.keys():
+            logits[ntype]=self.classifier.forward(encoding[ntype])
+        return logits
+    def classifier_forward(self,g):
+        encoding=self.encoder.forward(g)
+        logits={}
+        for ntype in encoding.keys():
+            logits[ntype]=self.classifier.forward(encoding[ntype])
+        return logits
     def forward_mb(self, p_blocks, masked_nodes=None, p_g=None, n_g=None, n_blocks=None,
                    num_chunks=None, chunk_size=None, neg_sample_size=None):
 

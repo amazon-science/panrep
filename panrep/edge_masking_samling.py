@@ -208,11 +208,12 @@ class RGCNLinkRankSampler:
                 n_blocks[0].srcnodes[ntype].data['h_f']=g.nodes[ntype].data['h_f'][
                     n_blocks[0].srcnodes[ntype].data['_ID']]
         time_copy=time.time()-cops
-
+        '''
         for i in range(len(n_blocks)):
             n_blocks[i] = n_blocks[i].to(device)
         for i in range(len(p_blocks)):
             p_blocks[i] = p_blocks[i].to(device)
+        
         block_sample_time=time.time()-block_sample_s
         print('copy time')
         print(time_copy)
@@ -222,7 +223,7 @@ class RGCNLinkRankSampler:
         print(del_time)
         print('overal sampling time')
         print(block_sample_time)
-
+        '''
         return (bsize, p_g, n_g, p_blocks, n_blocks)
 
 

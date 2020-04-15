@@ -18,7 +18,7 @@ from dgl import DGLGraph
 import dgl
 from classifiers import ClassifierRGCN,ClassifierMLP
 from load_data import load_kaggle_shoppers_data, load_wn_data,load_imdb_data,load_link_pred_wn_data
-from model import PanRepRGCNHetero
+from model import PanRepHetero
 import utils
 from classifiers import DLinkPredictor as DownstreamLinkPredictor
 from edge_masking_samling import hetero_edge_masker_sampler,create_edge_mask,unmask_edges

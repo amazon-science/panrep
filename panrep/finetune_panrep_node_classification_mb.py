@@ -7,7 +7,7 @@ Difference compared to tkipf/relation-gcn
 * l2norm applied to all weights
 * remove nodes that won't be touched
 """
-from node_sampling_masking import  node_masker_mb,HeteroNeighborSampler,InfomaxNodeRecNeighborSampler
+from node_sampling_masking import  HeteroNeighborSampler,InfomaxNodeRecNeighborSampler
 
 
 import argparse
@@ -15,63 +15,69 @@ import numpy as np
 import time
 import torch
 import torch.nn.functional as F
-from dgl import DGLGraph
 import dgl
-from classifiers import ClassifierRGCN,ClassifierMLP
+from classifiers import ClassifierMLP
 from load_data import load_hetero_data
-from model import PanRepRGCNHetero
+from model import PanRepHetero
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader
-from edge_masking_samling import hetero_edge_masker_sampler,create_edge_mask,unmask_edges
 from encoders import EncoderRelGraphConvHetero,EncoderRelGraphAttentionHetero
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score, normalized_mutual_info_score, adjusted_rand_score
 from sklearn.cluster import KMeans
 from sklearn.svm import LinearSVC
 
-def extract_embed(node_embed, block,masked_node_types=[], permute=False):
+
+def extract_embed(node_embed, block):
     emb = {}
     for ntype in block.srctypes:
-
         nid = block.srcnodes[ntype].data[dgl.NID]
-        if permute:
-            perm = torch.randperm(node_embed[ntype].shape[0])
-            emb[ntype] = node_embed[ntype][perm][nid]
-        else:
-            emb[ntype] = node_embed[ntype][nid]
+        emb[ntype] = node_embed[ntype][nid]
     return emb
-def extract_perm_embed(node_embed, block, use_infomax_loss=False):
-    if use_infomax_loss:
-                perm_emb = extract_embed(node_embed, block, permute=True)
-    else:
-                perm_emb={}
-    return perm_emb
-def extract_dst_embed(node_embed, seeds):
-    emb = {}
-    for ntype in seeds:
-        nid = seeds[ntype]
-        emb[ntype] = node_embed[ntype][nid,:]
-    return emb
-
-def evaluate(model, seeds, blocks, node_embed, labels, category, use_cuda):
+def evaluate(model, seeds, blocks, device, labels, category, use_cuda):
     model.eval()
-    emb = extract_embed(node_embed, blocks[0])
+    #emb = extract_embed(node_embed, blocks[0])
     lbl = labels[seeds]
     if use_cuda:
-        emb = {k : e.cuda() for k, e in emb.items()}
         lbl = lbl.cuda()
-    logits = model(emb, blocks)[category]
-    loss = F.cross_entropy(logits, lbl)
-    acc = torch.sum(logits.argmax(dim=1) == lbl).item() / len(seeds)
-    return loss, acc
+        for i in range(len(blocks)):
+            blocks[i] = blocks[i].to(device)
+    logits = model.classifier_forward_mb(blocks)[category]
+    loss = F.binary_cross_entropy_with_logits(logits, lbl)
 
-def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_prediction, use_reconstruction_loss,
-         use_infomax_loss, mask_links,use_self_loop,use_node_motif, args):
+    acc = torch.sum(logits.argmax(dim=1) == lbl.argmax(dim=1) ).item() / len(seeds)
+    pred = torch.sigmoid(logits).detach().cpu().numpy()
+    try:
+        acc_auc = roc_auc_score(lbl.cpu().numpy(), pred)
+    except ValueError:
+        acc_auc = -1
+        pass
+    return loss, acc,acc_auc
+
+def eval_panrep(model,dataloader):
+    model.eval()
+
+    print("==========Start evaluating===============")
+    for i, (seeds, blocks) in enumerate(dataloader):
+
+        loss, embeddings = model.forward_mb(p_blocks=blocks)
+    print("=============Evaluation finished=============")
+    return
+
+def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_prediction, use_reconstruction_loss,
+         use_infomax_loss, mask_links,use_self_loop,use_node_motif, num_cluster,single_layer,args):
+    if num_cluster>0:
+        args.use_cluster=True
+        args.num_clusters=num_cluster
+    else:
+        args.use_cluster = False
+    args.use_node_motifs=use_node_motif
     train_idx, test_idx, val_idx, labels, g, category, num_classes, masked_node_types=\
         load_hetero_data(args)
 
+    multilabel=True
     # sampler parameters
-    batch_size = 1024
+    batch_size = 8*1024
     l2norm=0.0001
 
     # check cuda
@@ -97,12 +103,15 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_pre
 
 
     # for the embedding layer
-    in_size_dict={}
+    out_size_dict={}
     for name in g.ntypes:
         if name not in masked_node_types:
-            in_size_dict[name] = g.nodes[name].data['h_f'].size(1)
+            if num_cluster>0:
+                out_size_dict[name]=g.nodes[name].data['h_clusters'].size(1)
+            else:
+                out_size_dict[name] = g.nodes[name].data['h_f'].size(1)
         else:
-            in_size_dict[name] =0
+            out_size_dict[name] =0
 
     # for the motif layer
 
@@ -120,7 +129,6 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_pre
                                     g=g,
                                     device=device,
                                   num_bases=n_bases,
-                                  in_size_dict=in_size_dict,
                                           etypes=g.etypes,
                                         ntypes=g.ntypes,
                                   num_hidden_layers=n_layers,
@@ -129,7 +137,6 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_pre
     elif args.encoder=='RGAT':
         encoder = EncoderRelGraphAttentionHetero(
                                             n_hidden,
-                                            in_size_dict=in_size_dict,
                                             etypes=g.etypes,
                                             ntypes=g.ntypes,
                                             num_hidden_layers=n_layers,
@@ -137,7 +144,7 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_pre
                                             use_self_loop=use_self_loop)
 
 
-    model = PanRepRGCNHetero(
+    model = PanRepHetero(
                              n_hidden,
                              n_hidden,
                              etypes=g.etypes,
@@ -145,7 +152,7 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_pre
                              ntype2id=ntype2id,
                              num_hidden_layers=n_layers,
                              dropout=dropout,
-                             in_size_dict=in_size_dict,
+                             out_size_dict=out_size_dict,
                              masked_node_types=masked_node_types,
                              loss_over_all_nodes=loss_over_all_nodes,
                              use_infomax_task=use_infomax_loss,
@@ -153,6 +160,8 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_pre
                              use_node_motif=use_node_motif,
                              link_prediction_task=link_prediction,
                              out_motif_dict=out_motif_dict,
+                             use_cluster=num_cluster>0,
+                             single_layer=single_layer,
                              use_cuda=use_cuda)
 
     if use_cuda:
@@ -172,128 +181,213 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_pre
         #TODO val set not used currently
 
 
-    hetero_dataset={}
-    for ntype in g.ntypes:
-        hetero_dataset[ntype]=list(np.arange(g.number_of_nodes(ntype)))
+    if use_cuda:
+        g=g.to(device)
 
+    val_pct=0.1
+    evaluate_every=50
     sampler = InfomaxNodeRecNeighborSampler(g, [fanout] * (n_layers), device=device, full_neighbor=True)
-    loader = DataLoader(dataset=list(np.arange(sampler.number_of_nodes)),
+    pr_node_ids=list(sampler.hetero_map.keys())
+    pr_val_ind=list(np.random.choice(len(pr_node_ids), int(len(pr_node_ids)*val_pct), replace=False))
+    pr_train_ind=list(set(list(np.arange(len(pr_node_ids)))).difference(set(pr_val_ind)))
+    loader = DataLoader(dataset=pr_train_ind,
                         batch_size=batch_size,
                         collate_fn=sampler.sample_blocks,
                         shuffle=True,
                         num_workers=0)
 
 
+    valid_loader = DataLoader(dataset=pr_val_ind,
+                        batch_size=batch_size,
+                        collate_fn=sampler.sample_blocks,
+                        shuffle=True,
+                        num_workers=0)
+    #TODO LOAD All data in GPU
+    #  Use validation set to supervise embeddings using the clustering accuracy loss and the others...
+
     # optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=l2norm)
 
     # training loop
     print("start training...")
-    forward_time = []
-    nm_time = []
-    lm_time = []
-    backward_time = []
-    un_mas_time=[]
-    model.train()
+
 
     for epoch in range(n_epochs):
-
+        model.train()
 
         optimizer.zero_grad()
         for i, (seeds, blocks) in enumerate(loader):
-            #emb = extract_embed(node_embed, blocks[0], permute=False)
-            #perm_emb = extract_perm_embed(node_embed, blocks[0], use_infomax_loss=use_infomax_loss)
-            #masked_nodes, masked_emb= node_masker_mb(emb, num_masked_nodes, masked_node_types,node_masking)
 
             if link_prediction:
                 raise NotImplementedError
-
-            #if use_cuda:
-            #    #masked_emb = {k: e.cuda() for k, e in masked_emb.items()}
-            #    perm_emb={k: e.cuda() for k, e in perm_emb.items()}
 
             loss, embeddings = model.forward_mb(p_blocks=blocks)
             loss.backward()
             optimizer.step()
 
 
-            print("Train Loss: {:.4f}".
-              format(loss.item()))
-            print(
-                "Epoch {:05d} | Batch {:03d}".# | Train Acc: {:.4f} |Train Acc AUC: {:.4f}| Train Loss: {:.4f} | Time: {:.4f}".
-                format(epoch, i))#, train_acc, train_acc_auc, loss.item(), time.time() - batch_tic))
+            print("Train Loss: {:.4f} Epoch {:05d} | Batch {:03d}".format(loss.item(), epoch, i))
+        if epoch % evaluate_every == 0:
+            eval_panrep(model=model, dataloader=valid_loader)
 
-        print()
+    ## Finetune PanRep
+    # add the target category in the sampler
+    sampler = InfomaxNodeRecNeighborSampler(g, [fanout] * (n_layers), device=device, full_neighbor=True,category=category)
+    fine_tune_loader = DataLoader(dataset=list(train_idx),
+                        batch_size=batch_size,
+                        collate_fn=sampler.sample_blocks,
+                        shuffle=True,
+                        num_workers=0)
+
+    # validation sampler
+    val_sampler = HeteroNeighborSampler(g, category, [fanout] * n_layers, True)
+    _, val_blocks = val_sampler.sample_blocks(val_idx)
+
+    # test sampler
+    test_sampler = HeteroNeighborSampler(g, category, [fanout] * n_layers, True)
+    _, test_blocks = test_sampler.sample_blocks(test_idx)
+
+    # optimizer
+
+    model.classifier=ClassifierMLP(input_size=n_hidden,hidden_size=n_hidden,out_size=num_classes)
+    #NodeClassifierRGCN(in_dim= n_hidden,out_dim=num_classes, rel_names=g.etypes,num_bases=n_bases)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=l2norm)
+    # training loop
+    print("start training...")
+    forward_time = []
+    backward_time = []
+    model.train()
+    if multilabel is False:
+        loss_func = torch.nn.CrossEntropyLoss()
+    else:
+        loss_func = torch.nn.BCEWithLogitsLoss()
+    # training loop
+    print("start training...")
+    dur = []
+    if use_cuda:
+        model.cuda()
+    labels=labels.float()
+    for epoch in range(n_fine_tune_epochs):
+        model.train()
+        optimizer.zero_grad()
+        if epoch > 3:
+            t0 = time.time()
+
+        for i, (seeds, blocks) in enumerate(fine_tune_loader):
+            batch_tic = time.time()
+            # need to copy the features
+            for i in range(len(blocks)):
+                blocks[i] = blocks[i].to(device)
+            #emb = extract_embed(node_embed, blocks[0])
+            lbl = labels[seeds[category]]
+            logits = model.classifier_forward_mb(blocks)[category]
+            loss = loss_func(logits, lbl)
+            loss.backward()
+            optimizer.step()
+
+            train_acc = torch.sum(logits.argmax(dim=1) == lbl.argmax(dim=1)).item() / len(seeds[category])
+            pred = torch.sigmoid(logits).detach().cpu().numpy()
+            try:
+                train_acc_auc = roc_auc_score(lbl.cpu().numpy(), pred)
+            except ValueError:
+                train_acc_auc=-1
+                pass
+            print("Epoch {:05d} | Batch {:03d} | Train Acc: {:.4f} |Train Acc AUC: {:.4f}| Train Loss: {:.4f} | Time: {:.4f}".
+                  format(epoch, i, train_acc,train_acc_auc, loss.item(), time.time() - batch_tic))
+
+        if epoch > 3:
+            dur.append(time.time() - t0)
+
+        val_loss, val_acc,val_acc_auc = evaluate(model, val_idx, val_blocks,device, labels, category,use_cuda)
+        print("Epoch {:05d} | Valid Acc: {:.4f} |Valid Acc Auc: {:.4f} | Valid loss: {:.4f} | Time: {:.4f}".
+              format(epoch, val_acc, val_acc_auc,val_loss.item(), np.average(dur)))
+    print()
+
     # full graph evaluation here
     model.eval()
     if use_cuda:
         model.cpu()
         model.encoder.cpu()
+        g=g.to(torch.device("cpu"))
     with torch.no_grad():
         embeddings = model.encoder.forward(g)
+        logits=model.classifier_forward(g)[category]
 
+    acc = torch.sum(logits[test_idx].argmax(dim=1) == labels[test_idx].cpu().argmax(dim=1)).item() / len(test_idx)
+    print("Test accuracy: {:4f}".format(acc))
     print("Mean forward time: {:4f}".format(np.mean(forward_time[len(forward_time) // 4:])))
     print("Mean backward time: {:4f}".format(np.mean(backward_time[len(backward_time) // 4:])))
-    print("Mean link masking time: {:4f}".format(np.mean(lm_time[len(lm_time) // 4:])))
-    print("Mean node masking time: {:4f}".format(np.mean(nm_time[len(nm_time) // 4:])))
+
     feats = embeddings[category]
-    # mlp_classifier(feats,use_cuda,args,num_classes,labels,train_idx,val_idx,test_idx,device)
+    #mlp_classifier(feats,use_cuda,args,num_classes,labels,train_idx,val_idx,test_idx,device)
     labels_i=np.argmax(labels.cpu().numpy(),axis=1)
-    svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std = evaluate_results_nc(
+    svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std,macro_str,micro_str = evaluate_results_nc(
         feats[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
+    print("With logits")
+    svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std, macro_str_log, micro_str_log = evaluate_results_nc(
+        logits[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
+    return macro_str+micro_str+" Logits: "+macro_str_log+micro_str_log
 
 def fit(args):
-        n_epochs_list = [1]#[100,200,400]
-        n_hidden_list = [100]#[50,150,300]
-        n_layers_list = [2]#[2,3]
+        n_epochs_list = [250,300]
+        n_fine_tune_epochs_list=[30,50,150]
+        n_hidden_list = [40,200,400]
+        n_layers_list = [2,3]#[2,3]
         n_bases_list = [30]
         lr_list = [1e-4]
-        dropout_list = [0.2]
+        dropout_list = [0.1]
         fanout_list = [None]
         use_link_prediction_list = [False]
-        use_reconstruction_loss_list =[True] #[True, False]
-        use_infomax_loss_list = [True]#[True, False]
-        use_node_motif_list = [True]
+        use_reconstruction_loss_list =[False,False]
+        use_infomax_loss_list = [False,True]
+        use_node_motif_list = [True,False]
+        num_cluster_list=[20]
         mask_links_list = [False]
         use_self_loop_list=[False]
+        single_layer_list=[False]
         for n_epochs in n_epochs_list:
-            for n_hidden in n_hidden_list:
-                for n_layers in n_layers_list:
-                    for n_bases in n_bases_list:
-                        for fanout in fanout_list:
-                            for lr in lr_list:
-                                for dropout in dropout_list:
-                                    for use_infomax_loss in use_infomax_loss_list:
-                                        for use_link_prediction in use_link_prediction_list:
-                                            for use_reconstruction_loss in use_reconstruction_loss_list:
-                                                for mask_links in mask_links_list:
-                                                    for use_self_loop in use_self_loop_list:
-                                                        for use_node_motif in use_node_motif_list:
-                                                            if not use_reconstruction_loss and not \
-                                                                    use_infomax_loss and not use_link_prediction\
-                                                                    and not use_node_motif:
-                                                                continue
-                                                            else:
-                                                                _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
-                                                                         use_link_prediction, use_reconstruction_loss,
-                                                                         use_infomax_loss, mask_links, use_self_loop,
-                                                                     use_node_motif,args)
-                                                                result = "PanRep-RGCN Model, n_epochs {}; n_hidden {}; n_layers {}; n_bases {}; " \
-                                                                         "fanout {}; lr {}; dropout {} use_reconstruction_loss {} " \
-                                                                         "use_link_prediction {} use_infomax_loss {} mask_links {} " \
-                                                                         "use_self_loop {} use_node_motif {}".format(
-                                                                    n_epochs,
-                                                                    n_hidden,
-                                                                    n_layers,
-                                                                    n_bases,
-                                                                    0,
-                                                                    lr,
-                                                                    dropout,
-                                                                    use_reconstruction_loss,
-                                                                    use_link_prediction,
-                                                                    use_infomax_loss,
-                                                                    mask_links,use_self_loop,use_node_motif)
-                                                                print(result)
+            for n_fine_tune_epochs in n_fine_tune_epochs_list:
+                for n_hidden in n_hidden_list:
+                    for n_layers in n_layers_list:
+                        for n_bases in n_bases_list:
+                            for fanout in fanout_list:
+                                for lr in lr_list:
+                                    for dropout in dropout_list:
+                                        for use_infomax_loss in use_infomax_loss_list:
+                                            for use_link_prediction in use_link_prediction_list:
+                                                for use_reconstruction_loss in use_reconstruction_loss_list:
+                                                    for mask_links in mask_links_list:
+                                                        for use_self_loop in use_self_loop_list:
+                                                            for use_node_motif in use_node_motif_list:
+                                                                for num_cluster in num_cluster_list:
+                                                                    for single_layer in single_layer_list:
+                                                                        if not use_reconstruction_loss and not \
+                                                                                use_infomax_loss and not use_link_prediction\
+                                                                                and not use_node_motif:
+                                                                            continue
+                                                                        else:
+                                                                            acc=_fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
+                                                                                     use_link_prediction, use_reconstruction_loss,
+                                                                                     use_infomax_loss, mask_links, use_self_loop,
+                                                                                 use_node_motif,num_cluster,single_layer,args)
+                                                                            result = "PanRep-RGCN Model, n_epochs {}; n_fine_tune_epochs {}; n_hidden {}; n_layers {}; n_bases {}; " \
+                                                                                     "fanout {}; lr {}; dropout {} use_reconstruction_loss {} " \
+                                                                                     "use_link_prediction {} use_infomax_loss {} mask_links {} " \
+                                                                                     "use_self_loop {} use_node_motif {} num_cluster {} single_layer {} acc {}".format(
+                                                                                n_epochs,
+                                                                                n_fine_tune_epochs,
+                                                                                n_hidden,
+                                                                                n_layers,
+                                                                                n_bases,
+                                                                                0,
+                                                                                lr,
+                                                                                dropout,
+                                                                                use_reconstruction_loss,
+                                                                                use_link_prediction,
+                                                                                use_infomax_loss,
+                                                                                mask_links,use_self_loop,use_node_motif,
+                                                                                num_cluster,single_layer,acc)
+                                                                            print(result)
 
         return
 
@@ -335,18 +429,21 @@ def svm_test(X, y, test_sizes=(0.2, 0.4, 0.6, 0.8), repeat=10):
 def evaluate_results_nc(embeddings, labels, num_classes):
     print('SVM test')
     svm_macro_f1_list, svm_micro_f1_list = svm_test(embeddings, labels)
-    print('Macro-F1: ' + ', '.join(['{:.6f}~{:.6f} ({:.1f})'.format(macro_f1_mean, macro_f1_std, train_size) for
+    macro_str='Macro-F1: ' + ', '.join(['{:.6f}~{:.6f} ({:.1f})'.format(macro_f1_mean, macro_f1_std, train_size) for
                                     (macro_f1_mean, macro_f1_std), train_size in
-                                    zip(svm_macro_f1_list, [0.8, 0.6, 0.4, 0.2])]))
-    print('Micro-F1: ' + ', '.join(['{:.6f}~{:.6f} ({:.1f})'.format(micro_f1_mean, micro_f1_std, train_size) for
+                                    zip(svm_macro_f1_list, [0.8, 0.6, 0.4, 0.2])])
+
+    micro_str='Micro-F1: ' + ', '.join(['{:.6f}~{:.6f} ({:.1f})'.format(micro_f1_mean, micro_f1_std, train_size) for
                                     (micro_f1_mean, micro_f1_std), train_size in
-                                    zip(svm_micro_f1_list, [0.8, 0.6, 0.4, 0.2])]))
+                                    zip(svm_micro_f1_list, [0.8, 0.6, 0.4, 0.2])])
+    print(macro_str)
+    print(micro_str)
     print('K-means test')
     nmi_mean, nmi_std, ari_mean, ari_std = kmeans_test(embeddings, labels, num_classes)
     print('NMI: {:.6f}~{:.6f}'.format(nmi_mean, nmi_std))
     print('ARI: {:.6f}~{:.6f}'.format(ari_mean, ari_std))
 
-    return svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std
+    return svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std,macro_str,micro_str
 
 
 def mlp_classifier(feats,use_cuda,n_hidden,lr_d,n_cepochs,args,num_classes,labels,train_idx,val_idx,test_idx,device):
@@ -429,7 +526,7 @@ if __name__ == '__main__':
             help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=60,
             help="number of hidden units") # use 16, 2 for debug
-    parser.add_argument("--gpu", type=int, default=3,
+    parser.add_argument("--gpu", type=int, default=2,
             help="gpu")
     parser.add_argument("--lr", type=float, default=1e-3,
             help="learning rate")
@@ -481,7 +578,8 @@ if __name__ == '__main__':
             help='path for save the model')
     parser.add_argument("--fanout", type=int, default=10,
             help="Fan-out of neighbor sampling.")
-
+    parser.add_argument("--split", type=int, default=5,
+                        help="split type.")
     fp = parser.add_mutually_exclusive_group(required=False)
     fp.add_argument('--validation', dest='validation', action='store_true')
     fp.add_argument('--testing', dest='validation', action='store_false')

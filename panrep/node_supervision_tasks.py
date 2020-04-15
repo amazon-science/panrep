@@ -2,6 +2,10 @@ import torch.nn.functional as F
 import torch.nn as nn
 import torch
 import math
+from layers import RelGraphConvHetero
+from functools import partial
+from sklearn.metrics import roc_auc_score
+
 
 class LinkPredictorDistMultMB(nn.Module):
     def __init__(self,
@@ -188,7 +192,7 @@ class AttributeDecoder(nn.Module):
         return h
 
 class NodeMotifDecoder(nn.Module):
-    def __init__(self, in_dim, h_dim, out_dict, distribution=False,activation=nn.ReLU(), single_layer=False):
+    def __init__(self, in_dim, h_dim, out_dict, distribution=False,activation=nn.ReLU(), single_layer=False,output=True):
         '''
 
         :param out_dim:
@@ -202,6 +206,7 @@ class NodeMotifDecoder(nn.Module):
         self.h_dim=h_dim
         self.weight=nn.ModuleDict()
         self.single_layer=single_layer
+        self.output=output
         self.distribution=distribution
         layers=[]
         for name in out_dict.keys():
@@ -211,27 +216,60 @@ class NodeMotifDecoder(nn.Module):
             else:
                 layers.append(nn.Linear( in_dim, self.h_dim))
                 layers.append(activation)
+
                 layers.append(nn.Linear( self.h_dim, out_dict[name],bias=False))
+            if not self.distribution:
+                layers.append(nn.Sigmoid())
+            #make sure is correct
             self.weight[name]=nn.Sequential(*layers)
 
     def forward(self, g, h):
         node_embed=h
         loss=0
         g = g.local_var()
+        train_acc=0
+        train_acc_auc=0
+
         for name in g.dsttypes:
             if name in node_embed:
                 reconstructed=self.weight[name](node_embed[name])
                 if self.distribution:
                     loss += F.mse_loss(reconstructed, g.dstnodes[name].data['motifs'])
                 else:
-                    loss += F.binary_cross_entropy_with_logits(reconstructed, g.dstnodes[name].data['motifs'])
+                    lbl=g.dstnodes[name].data['motifs']
+                    logits=reconstructed
+                    loss += F.binary_cross_entropy_with_logits(logits, lbl)
+                    if self.output:
+                        train_acc += torch.sum(logits.argmax(dim=1) == lbl.argmax(dim=1)).item() / logits.shape[0]
+                        pred = torch.sigmoid(logits).detach().cpu().numpy()
+                        try:
+                            train_acc_auc += roc_auc_score(lbl.cpu().numpy(), pred)
+                        except ValueError:
+                            pass
+        if not self.distribution and self.output:
+                print('Motif prediction accuracy: {:.4f} | AUC: {:.4f}'.
+                  format(train_acc/len(g.dsttypes),train_acc_auc/len(g.dsttypes)))
             #hs = [g.nodes[ntype].data['h'] for ntype in g.ntypes]
 
         return loss
+class NodeClassifierRGCN(nn.Module):
+    def __init__(self,  in_dim, out_dim, rel_names,num_bases,
+                  activation=partial(F.softmax, dim=1), use_self_loop=False):
 
+        super(NodeClassifierRGCN, self).__init__()
 
+        self.layer=RelGraphConvHetero(in_dim, out_dim, rel_names, "basis", num_bases,activation=activation,
+                 self_loop=use_self_loop)
+
+    def forward(self,g,h_d):
+        h = self.layer(g, h_d)
+        return h
+    def forward_mb(self,g, h_d):
+        h=self.layer.forward_mb(g, h_d)
+        return h
 class MultipleAttributeDecoder(nn.Module):
-    def __init__(self, out_size_dict, in_size, h_dim, masked_node_types, loss_over_all_nodes,activation=nn.ReLU(),single_layer=False):
+    def __init__(self, out_size_dict, in_size, h_dim, masked_node_types,
+                 loss_over_all_nodes,activation=nn.ReLU(),single_layer=False,use_cluster=False,output=True):
         '''
 
         :param out_size_dict:
@@ -245,21 +283,31 @@ class MultipleAttributeDecoder(nn.Module):
         # W_r for each node
         self.activation=activation
         self.h_dim=h_dim
-        self.weight=nn.ModuleDict()
+
         self.masked_node_types=masked_node_types
         self.loss_over_all_nodes=loss_over_all_nodes
         self.single_layer=single_layer
-
+        self.use_cluster=use_cluster
+        self.output=output
+        self.weight = nn.ModuleDict()
         for name in out_size_dict.keys():
             layers=[]
             if self.single_layer:
-                layers.append(nn.Linear( in_size,  out_size_dict[name],bias=False))
+                layers.append(nn.Linear(in_size, out_size_dict[name], bias=False))
             else:
                 layers.append(nn.Linear( in_size, self.h_dim))
                 layers.append(activation)
-                layers.append(nn.Linear( self.h_dim, out_size_dict[name],bias=False))
+                layers.append(nn.Linear(self.h_dim, out_size_dict[name], bias=False))
+            if use_cluster:
+                layers.append(nn.Sigmoid())
             self.weight[name]=nn.Sequential(*layers)
 
+    def loss_function(self,pred,act):
+        if self.use_cluster:
+            loss=F.cross_entropy(pred,torch.argmax(act,dim=1))
+        else:
+            loss=F.mse_loss(pred,act)
+        return loss
 
     def forward(self,G,h,masked_nodes):
         g = G.local_var()
@@ -271,43 +319,52 @@ class MultipleAttributeDecoder(nn.Module):
                 g.nodes[name].data['h']=self.weight[name](g.nodes[name].data['x'])
                 if bool(masked_nodes):
                     if not self.loss_over_all_nodes:
-                        loss+=F.mse_loss(g.nodes[name].data['h'][masked_nodes[name]],g.nodes[name].data['masked_values'][masked_nodes[name]])
+                        loss+=self.loss_function(g.nodes[name].data['h'][masked_nodes[name]],g.nodes[name].data['masked_values'][masked_nodes[name]])
                     else:
-                        loss += F.mse_loss(g.nodes[name].data['h'],
+                        loss += self.loss_function(g.nodes[name].data['h'],
                                            g.nodes[name].data['masked_values'])
 
                 else:
-                    loss += F.mse_loss(g.nodes[name].data['h'],
-                                       g.nodes[name].data['features'])
+                    loss += self.loss_function(g.nodes[name].data['h'],
+                                       g.nodes[name].data['h_f'])
         #hs = [g.nodes[ntype].data['h'] for ntype in g.ntypes]
 
         return loss
+
 
     def forward_mb(self, g, h, masked_nodes):
         node_embed=h
         loss=0
         g = g.local_var()
+        if self.use_cluster:
+            data_param='h_clusters'
+        else:
+            data_param="h_f"
+        total=0
+        correct=0
         for name in self.weight:
-            if g.dstnodes[name].data.get("h_f", None) is not None:
+            if g.dstnodes[name].data.get(data_param, None) is not None:
                 reconstructed=self.weight[name](node_embed[name])
                 if bool(masked_nodes):
                     if not self.loss_over_all_nodes:
-                        loss+=F.mse_loss(reconstructed[masked_nodes[name]],g.dstnodes[name].data['h_f'])
+                        loss+=self.loss_function(reconstructed[masked_nodes[name]],g.dstnodes[name].data[data_param])
                     else:
-                        loss += F.mse_loss(reconstructed, g.dstnodes[name].data['h_f'])
+                        loss += self.loss_function(reconstructed, g.dstnodes[name].data[data_param])
 
                 else:
-                    loss += F.mse_loss(reconstructed, g.dstnodes[name].data['h_f'])
+                    loss += self.loss_function(reconstructed, g.dstnodes[name].data[data_param])
+            if self.use_cluster and self.output:
+                _, predicted = torch.max(reconstructed.data, 1)
+                labels = torch.argmax(g.dstnodes[name].data[data_param], dim=1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+        if self.use_cluster and self.output:
+            print('Cluster accuracy: %d %%' % (
+                    100 * correct / total))
         #hs = [g.nodes[ntype].data['h'] for ntype in g.ntypes]
 
+
         return loss
-
-
-def reconstruction_loss(reconstructed_feats, feats):
-    feats=feats.float()
-    loss_train = F.mse_loss(reconstructed_feats, feats)
-
-    return loss_train
 
 class Discriminator(nn.Module):
     def __init__(self, n_hidden):
