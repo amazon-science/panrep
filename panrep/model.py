@@ -41,9 +41,9 @@ class PanRepHetero(nn.Module):
         # self.encoder.build_model()
         # G.nodes['transaction'].data['features']
 
-        if not self.use_infomax_task and not self.use_reconstruction_task \
-                and not self.link_prediction_task and not self.use_node_motif_task:
-            raise ValueError("All losses disabled, can not train.")
+        #if not self.use_infomax_task and not self.use_reconstruction_task \
+        #        and not self.link_prediction_task and not self.use_node_motif_task:
+        #    raise ValueError("All losses disabled, can not train.")
         if self.use_reconstruction_task:
             self.attributeDecoder = MultipleAttributeDecoder(
                 out_size_dict=out_size_dict, in_size=self.h_dim,

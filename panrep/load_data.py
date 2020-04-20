@@ -15,7 +15,28 @@ def compute_cluster_assignemnts(features,cluster_number):
     one_hot=pd.get_dummies(label)
 
     return torch.tensor(one_hot.values).float()
+def generate_rwalks(g,metapaths,samples_per_node=20,device=None):
+    rw_neighbors={}
+    for ntype in metapaths.keys():
+        traces,types=dgl.sampling.random_walk(g, list(np.arange(g.number_of_nodes(ntype)))* samples_per_node, metapath = metapaths[ntype])
+        # remove the same node id as the start of the walk!!
+        traces=traces[:,1:]
+        types=types[1:]
+        sampled_ntypes=list(types.numpy())*samples_per_node
+        rw_neighbors_ids=traces.reshape((g.number_of_nodes(ntype),samples_per_node*traces.shape[1]))
+        rw_neighbors[ntype]=(rw_neighbors_ids,sampled_ntypes)
+        neighbors = rw_neighbors[ntype][0]
+        neighbor_per_ntype = {}
+        for id in range(len(rw_neighbors[ntype][1])):
+            neighbor_type = g.ntypes[rw_neighbors[ntype][1][id]]
+            if neighbor_type in neighbor_per_ntype:
+                    neighbor_per_ntype[neighbor_type] = torch.cat(
+                        (neighbor_per_ntype[neighbor_type], neighbors[:, id].unsqueeze(0).transpose(1, 0).to(device)), dim=1)
+            else:
+                    neighbor_per_ntype[neighbor_type] = neighbors[:, id].unsqueeze(0).transpose(1, 0).to(device)
+        rw_neighbors[ntype]=neighbor_per_ntype
 
+    return rw_neighbors
 def load_hetero_data(args):
     if args.dataset == "kaggle_shoppers":
         train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_kaggle_shoppers_data(args)
@@ -24,7 +45,7 @@ def load_hetero_data(args):
     elif args.dataset == "imdb":
         train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_imdb_data(args)
     elif args.dataset == "imdb_preprocessed":
-        train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_imdb_preprocessed_data(args)
+        train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types,rw_neighbors= load_imdb_preprocessed_data(args)
     elif args.dataset == "dblp_preprocessed":
         train_idx, test_idx, val_idx, labels, g, category, num_classes, masked_node_types = load_dblp_preprocessed_data(
             args)
@@ -33,7 +54,7 @@ def load_hetero_data(args):
             args)
     else:
         raise NotImplementedError
-    return train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types
+    return train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types,rw_neighbors
 
 def load_hetero_link_pred_data(args):
     if args.dataset == "wn18":
@@ -154,8 +175,19 @@ def keep_frequent_motifs(g):
         print(to_keep_inds)
         g.nodes[ntype].data['motifs'] = g.nodes[ntype].data['motifs'][:, to_keep_inds]
     return g
+def motif_distribution_to_clusters(g,cluster_number):
+    for ntype in g.ntypes:
+        g.nodes[ntype].data['motifs']=compute_cluster_assignemnts(g.nodes[ntype].data['motifs'], cluster_number)
+    return g
+def motif_distribution_to_zero_one(g,args):
+    if args.motif_clusters>0:
+        g=motif_distribution_to_clusters(g, args.motif_clusters)
+    else:
+        g=motif_distribution_to_high_low_one(g)
+    return g
 
-def motif_distribution_to_zero_one(g):
+
+def motif_distribution_to_high_low_one(g):
     # convert the motif distribution to high (1) and low (0) values
     med=False
     mean=True
@@ -195,7 +227,7 @@ def load_link_pred_wn_pick_data(args):
         for ntype in train_g.ntypes:
             train_g.nodes[ntype].data['motifs'] = train_g.nodes[ntype].data['motifs'].float()
         train_g=keep_frequent_motifs(train_g)
-        train_g=motif_distribution_to_zero_one(train_g)
+        train_g=motif_distribution_to_zero_one(train_g,args)
     else:
         for ntype in train_g.ntypes:
             del train_g.nodes[ntype].data['motifs']
@@ -429,41 +461,38 @@ def load_imdb_prexiang_preprocessed_data(args):
 
     # In[12]:
 
-    data_folder = "../data/imdb_data/"
+    data_folder = "../data/imdb_data/xiang/"
 
     # In[13]:
     # load to cpu for very large graphs
     file='dgl-neptune-dataset.pickle'
-    G=None
+
     dataset=pickle.load(open(os.path.join(data_folder, file), "rb"))
-    dataset
+    G=dataset.g
 
-
-
-    labels = pickle.load(open(os.path.join(data_folder, 'labels.pickle'), "rb"))
-    train_val_test_idx = np.load(data_folder + 'train_val_test_idx.npz')
-
-
-    print(labels)
-
-    train_idx = train_val_test_idx['train_idx']
-    val_idx = train_val_test_idx['val_idx']
-    test_idx = train_val_test_idx['test_idx']
+    if args.use_node_motifs:
+        node_motifs = pickle.load(open(os.path.join(data_folder, 'node_motifs.pickle'), "rb"))
+        for ntype in G.ntypes:
+            G.nodes[ntype].data['motifs'] = node_motifs[ntype].float()
+        G=keep_frequent_motifs(G)
+        G=motif_distribution_to_zero_one(G,args)
+        print(sum(G.nodes[ntype].data['motifs']))
+    for ntype in dataset.features.keys():
+        G.nodes[ntype].data["h_f"]=dataset.features[ntype]
+    category = 'title'
+    train_idx, train_label = dataset.train_set[category]
+    val_idx, val_label = dataset.valid_set[category]
+    test_idx, test_label = dataset.test_set[category]
+    num_classes = len(list(dataset.labels.values())[0].label_map)
+    labels = torch.zeros((G.number_of_nodes(category), len(list(dataset.labels.values())[0].label_map)))
+    labels[train_idx] = train_label.float()
+    labels[val_idx] = val_label.float()
+    labels[test_idx] = test_label.float()
 
     train_idx = np.array(train_idx)
     test_idx = np.array(test_idx)
     val_idx = np.array(val_idx)
-    category='movie'
-    num_classes = 3
-    if num_classes > 1:
-        labels_n = torch.zeros((np.shape(labels)[0], num_classes))
-        if check_cuda:
-            labels_n.cuda()
-        for i in range(np.shape(labels)[0]):
-            labels_n[i, int(labels[i])] = 1
-    else:
-        labels_n = labels
-    labels = labels_n
+
     featless_node_types = []
     if args.use_cluster:
         for ntype in G.ntypes:
@@ -501,15 +530,25 @@ def load_imdb_preprocessed_data(args):
         for ntype in G.ntypes:
             G.nodes[ntype].data['motifs'] = G.nodes[ntype].data['motifs'].float()
         G=keep_frequent_motifs(G)
-        G=motif_distribution_to_zero_one(G)
+        G=motif_distribution_to_zero_one(G,args)
     else:
         G = pickle.load(open(os.path.join(data_folder, 'graph.pickle'), "rb")).to(torch.device("cpu"))
+    metapaths = {}
+    if args.rw_supervision:
+        metapaths['actor'] = ['played',  'played_by'] * 1
+        metapaths['director'] = ['directed','directed_by'] * 1
+        metapaths['movie'] = ['played_by', 'played'] * 1
 
     labels = pickle.load(open(os.path.join(data_folder, 'labels.pickle'), "rb"))
-    if args.split==5:
-        train_val_test_idx = np.load(data_folder + 'train_val_test_idx005.npz')
+
+    if args.k_fold>0:
+        train_val_test_idx = np.load(data_folder + 'train_val_test_idx_kfold-'+str(args.k_fold)+'.npz')
     else:
-        train_val_test_idx = np.load(data_folder + 'train_val_test_idx.npz')
+        if args.split==5:
+            train_val_test_idx = np.load(data_folder + 'train_val_test_idx005.npz')
+        else:
+            train_val_test_idx = np.load(data_folder + 'train_val_test_idx.npz')
+
 
     print(G)
 
@@ -539,7 +578,7 @@ def load_imdb_preprocessed_data(args):
         for ntype in G.ntypes:
             if G.nodes[ntype].data.get("h_f", None) is not None:
                 G.nodes[ntype].data['h_clusters']=compute_cluster_assignemnts(G.nodes[ntype].data['h_f'],cluster_number=args.num_clusters)
-    return train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types
+    return train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types,metapaths
 
 def load_dblp_preprocessed_data(args):
     use_cuda = args.gpu
@@ -571,7 +610,7 @@ def load_dblp_preprocessed_data(args):
         for ntype in G.ntypes:
             G.nodes[ntype].data['motifs'] = G.nodes[ntype].data['motifs'].float()
         G = keep_frequent_motifs(G)
-        G = motif_distribution_to_zero_one(G)
+        G = motif_distribution_to_zero_one(G,args)
     else:
         G = pickle.load(open(os.path.join(data_folder, 'graph.pickle'), "rb")).to(torch.device("cpu"))
     labels = pickle.load(open(os.path.join(data_folder, 'labels.pickle'), "rb"))

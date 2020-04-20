@@ -6,6 +6,105 @@ from layers import RelGraphConvHetero
 from functools import partial
 from sklearn.metrics import roc_auc_score
 
+class MetapathRWalkerSupervision(nn.Module):
+        def __init__(self, in_dim, out_dim=0,  num_hidden_layers=0, reg_param=0, use_cuda=False,device=None):
+            super(MetapathRWalkerSupervision, self).__init__()
+            self.reg_param = reg_param
+            self.in_dim = in_dim
+            self.device=device
+            self.num_hidden_layers = num_hidden_layers
+            if self.num_hidden_layers==0:
+                out_dim=in_dim
+            self.w_relation = nn.Parameter(torch.Tensor(out_dim, 1))
+            nn.init.xavier_uniform_(self.w_relation, gain=nn.init.calculate_gain('relu'))
+            # one hidden layer
+        def calc_score(self, head_embed, tail_embed):
+                # DistMult
+                s = head_embed
+                r = self.w_relation.squeeze()
+                o = tail_embed
+                score = torch.sum(s * r * o, dim=1)
+                return score
+
+        def regularization_loss(self, embedding):
+            loss = 0
+            for ntype in embedding.keys():
+                loss += torch.mean(embedding[ntype].pow(2))
+
+            loss += torch.mean(self.w_relation.pow(2))
+            return loss
+
+        def forward(self, g, inp_h):
+            return inp_h
+
+        def get_loss(self, g, embed,rw_neighbors):
+
+            predict_loss=0
+            labels=None
+            score=None
+            same_node_type=True
+            for ntype in rw_neighbors.keys():
+                cur_ntype_neighbors=rw_neighbors[ntype]
+                if same_node_type:
+                        neighbo_ntype=ntype
+                        neighbor_ids = cur_ntype_neighbors[neighbo_ntype][g.dstnodes[ntype].data['_ID']]
+                        # Build inverse mapping given the ids in the original graph it returns the ids in the seed graph.
+                        # This is given by the inverse of the seed nodes....
+                        sampled_neighbors_ids = g.dstnodes[neighbo_ntype].data['_ID']
+
+                        neighbors_ids_in_sampled_g = (torch.nonzero(
+                            neighbor_ids[..., None] == sampled_neighbors_ids))
+                        row_neighbor_ids_ind = neighbors_ids_in_sampled_g[:, 0]  # head id
+                        column_neighbor_ids_ind = neighbors_ids_in_sampled_g[:, 1]
+                        sampled_neighbors_ids_ind = neighbors_ids_in_sampled_g[:, 2]  # tail id?
+                        tail_embedding = embed[neighbo_ntype][sampled_neighbors_ids_ind]
+                        head_embedding = embed[ntype][row_neighbor_ids_ind]
+                        cur_score = self.calc_score(head_embedding, tail_embedding)
+                        if labels is None:
+                            score = cur_score
+                            labels = torch.ones((tail_embedding.shape[0]), device=self.device)
+                        else:
+                            score = torch.cat((score, cur_score))
+                            labels = torch.cat((labels, torch.ones((tail_embedding.shape[0]), device=self.device)))
+                        # load results from finetune_panrep_node_classification_mb
+
+                else:
+                    for neighbo_ntype in cur_ntype_neighbors.keys():
+                        neighbor_ids=cur_ntype_neighbors[neighbo_ntype][g.dstnodes[ntype].data['_ID']]
+                        #Build inverse mapping given the ids in the original graph it returns the ids in the seed graph.
+                        # This is given by the inverse of the seed nodes....
+                        sampled_neighbors_ids = g.dstnodes[neighbo_ntype].data['_ID']
+
+                        neighbors_ids_in_sampled_g = (torch.nonzero(
+                            neighbor_ids[..., None] == sampled_neighbors_ids))
+                        row_neighbor_ids_ind=neighbors_ids_in_sampled_g[:,0] # head id
+                        column_neighbor_ids_ind = neighbors_ids_in_sampled_g[:, 1]
+                        sampled_neighbors_ids_ind= neighbors_ids_in_sampled_g[:, 2] # tail id?
+                        tail_embedding = embed[neighbo_ntype][sampled_neighbors_ids_ind]
+                        head_embedding= embed[ntype][row_neighbor_ids_ind]
+                        cur_score = self.calc_score(head_embedding, tail_embedding)
+                        if labels is None:
+                            score = cur_score
+                            labels = torch.ones((tail_embedding.shape[0]),device=self.device)
+                        else:
+                            score = torch.cat((score, cur_score))
+                            labels=torch.cat((labels,torch.ones((tail_embedding.shape[0]),device=self.device)))
+                        #load results from finetune_panrep_node_classification_mb
+
+
+
+
+
+            predict_loss = 0
+            #for etype in self.etypes:
+            predict_loss += F.binary_cross_entropy_with_logits(score, labels)
+
+            # TODO implement regularization
+
+            reg_loss = self.regularization_loss(embed)
+
+            return predict_loss + self.reg_param * reg_loss
+
 
 class LinkPredictorDistMultMB(nn.Module):
     def __init__(self,
@@ -218,8 +317,8 @@ class NodeMotifDecoder(nn.Module):
                 layers.append(activation)
 
                 layers.append(nn.Linear( self.h_dim, out_dict[name],bias=False))
-            if not self.distribution:
-                layers.append(nn.Sigmoid())
+            #if not self.distribution:
+            #    layers.append(nn.Sigmoid())
             #make sure is correct
             self.weight[name]=nn.Sequential(*layers)
 

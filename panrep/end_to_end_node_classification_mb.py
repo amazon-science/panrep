@@ -9,7 +9,8 @@ Difference compared to tkipf/relation-gcn
 """
 
 import argparse
-from edge_masking_samling import create_edge_mask
+import os,pickle
+from datetime import datetime
 import time
 import torch
 import torch.nn.functional as F
@@ -67,8 +68,11 @@ def evaluate(model, seeds, blocks, device, labels, category, use_cuda):
 def main(args):
     fit(args)
 
-def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr,dropout, use_self_loop, args):
-
+def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr,dropout, use_self_loop, K,args):
+    args.use_cluster = False
+    args.k_fold=K
+    args.motif_clusters=0
+    args.use_node_motifs=False
     train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_hetero_data(args)
 
     category_id = len(g.ntypes)
@@ -203,7 +207,8 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr,dropout, use_self_loo
         labels_i = np.argmax(labels.cpu().numpy(), axis=1)
         feats=feats.cpu().detach().numpy()
 
-        svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std = evaluate_results_nc(
+        svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std,macro_str,micro_str\
+            = evaluate_results_nc(
             feats, labels_i[test_idx], num_classes=num_classes)
     if args.model_path is not None:
             torch.save(model.state_dict(), args.model_path)
@@ -211,7 +216,7 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr,dropout, use_self_loo
     test_loss, test_acc,test_acc_auc = evaluate(model, test_idx, test_blocks,device, labels, category,use_cuda)
     print("Test Acc: {:.4f}| Test Acc Auc: {:.4f}  | Test loss: {:.4f}".format(test_acc, test_acc_auc,test_loss.item()))
     print()
-
+    return "Test Acc: {:.4f} ".format(test_acc)+" "+macro_str+" "+macro_str
 def kmeans_test(X, y, n_clusters, repeat=10):
     nmi_list = []
     ari_list = []
@@ -250,55 +255,61 @@ def svm_test(X, y, test_sizes=(0.2, 0.4, 0.6, 0.8), repeat=10):
 def evaluate_results_nc(embeddings, labels, num_classes):
     print('SVM test')
     svm_macro_f1_list, svm_micro_f1_list = svm_test(embeddings, labels)
-    print('Macro-F1: ' + ', '.join(['{:.6f}~{:.6f} ({:.1f})'.format(macro_f1_mean, macro_f1_std, train_size) for
+    macro_str='Macro-F1: ' + ', '.join(['{:.6f}~{:.6f} ({:.1f})'.format(macro_f1_mean, macro_f1_std, train_size) for
                                     (macro_f1_mean, macro_f1_std), train_size in
-                                    zip(svm_macro_f1_list, [0.8, 0.6, 0.4, 0.2])]))
-    print('Micro-F1: ' + ', '.join(['{:.6f}~{:.6f} ({:.1f})'.format(micro_f1_mean, micro_f1_std, train_size) for
+                                    zip(svm_macro_f1_list, [0.8, 0.6, 0.4, 0.2])])
+
+    micro_str='Micro-F1: ' + ', '.join(['{:.6f}~{:.6f} ({:.1f})'.format(micro_f1_mean, micro_f1_std, train_size) for
                                     (micro_f1_mean, micro_f1_std), train_size in
-                                    zip(svm_micro_f1_list, [0.8, 0.6, 0.4, 0.2])]))
+                                    zip(svm_micro_f1_list, [0.8, 0.6, 0.4, 0.2])])
+    print(macro_str)
+    print(micro_str)
     print('K-means test')
     nmi_mean, nmi_std, ari_mean, ari_std = kmeans_test(embeddings, labels, num_classes)
     print('NMI: {:.6f}~{:.6f}'.format(nmi_mean, nmi_std))
     print('ARI: {:.6f}~{:.6f}'.format(ari_mean, ari_std))
 
-    return svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std
+    return svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std,macro_str,micro_str
 
 def fit(args):
-        n_epochs_list = [50,150,300]
-        n_hidden_list = [50,200,400]
-        n_layers_list = [2,3]#[2,3]
+        n_epochs_list = [100,200,400,600,800]#[250,300]
+        n_hidden_list =[50,100,300,500,700]#[40,200,400]
+        n_layers_list = [2]
         n_bases_list = [30]
-        lr_list = [1e-3,1e-4]
-        dropout_list = [0.1,0.2]
-        fanout_list = [None,5]
-        use_link_prediction_list = [False]
-        use_reconstruction_loss_list = [True]  # [True, False]
-        use_infomax_loss_list = [True]  # [True, False]
-        use_node_motif_list = [True]
-        mask_links_list = [False]
+        lr_list = [5e-4]
+        dropout_list = [0.1]
+        fanout_list = [None]
         use_self_loop_list = [False]
+        K_list=[2,5,10,15]
+        results={}
         for n_epochs in n_epochs_list:
             for n_hidden in n_hidden_list:
                 for n_layers in n_layers_list:
                     for n_bases in n_bases_list:
                         for fanout in fanout_list:
                             for lr in lr_list:
-                                for dropout in dropout_list:
-                                    for use_self_loop in use_self_loop_list:
-                                                                _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr,
-                                                                     dropout, use_self_loop, args)
-                                                                result = "RGCN Model, n_epochs {}; n_hidden {}; n_layers {}; n_bases {}; " \
-                                                                         "fanout {}; lr {}; dropout {}" \
-                                                                         "use_self_loop {} ".format(
-                                                                    n_epochs,
-                                                                    n_hidden,
-                                                                    n_layers,
-                                                                    n_bases,
-                                                                    0,
-                                                                    lr,
-                                                                    dropout, use_self_loop)
-                                                                print(result)
-
+                                for K in K_list:
+                                    for dropout in dropout_list:
+                                        for use_self_loop in use_self_loop_list:
+                                                                    acc=_fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr,
+                                                                         dropout, use_self_loop, K, args)
+                                                                    results[(n_epochs, n_layers, n_hidden, n_bases, fanout, lr,
+                                                                         dropout, use_self_loop, K)]=acc
+                                                                    result = "RGCN Model, n_epochs {}; n_hidden {}; n_layers {}; n_bases {}; " \
+                                                                             "fanout {}; lr {}; dropout {}" \
+                                                                             "use_self_loop {} ".format(
+                                                                        n_epochs,
+                                                                        n_hidden,
+                                                                        n_layers,
+                                                                        n_bases,
+                                                                        0,
+                                                                        lr,
+                                                                        dropout, use_self_loop)
+                                                                    print(result)
+        results[str(args)]=1
+        file=str(datetime.date(datetime.now()))+"-"+str(datetime.time(datetime.now()))
+        pickle.dump(results,open(os.path.join("results/end_to_end_node_classification/", file+".pickle"), "wb"),
+                protocol=4)
         return
 
 
@@ -308,7 +319,7 @@ if __name__ == '__main__':
             help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=50,
             help="number of hidden units") # use 16, 2 for debug
-    parser.add_argument("--gpu", type=int, default=3,
+    parser.add_argument("--gpu", type=int, default=5,
             help="gpu")
     parser.add_argument("--lr", type=float, default=1e-2,
             help="learning rate")

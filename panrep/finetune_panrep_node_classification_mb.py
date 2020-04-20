@@ -66,12 +66,14 @@ def eval_panrep(model,dataloader):
     return
 
 def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_prediction, use_reconstruction_loss,
-         use_infomax_loss, mask_links,use_self_loop,use_node_motif, num_cluster,single_layer,args):
+         use_infomax_loss, mask_links,use_self_loop,use_node_motif, num_cluster,single_layer,motif_cluster,k_fold,args):
     if num_cluster>0:
         args.use_cluster=True
         args.num_clusters=num_cluster
     else:
         args.use_cluster = False
+    args.k_fold=k_fold
+    args.motif_clusters=motif_cluster
     args.use_node_motifs=use_node_motif
     train_idx, test_idx, val_idx, labels, g, category, num_classes, masked_node_types=\
         load_hetero_data(args)
@@ -165,6 +167,7 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
                              single_layer=single_layer,
                              use_cuda=use_cuda)
 
+
     if use_cuda:
         model.cuda()
     node_embed={}
@@ -230,7 +233,24 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
             print("Train Loss: {:.4f} Epoch {:05d} | Batch {:03d}".format(loss.item(), epoch, i))
         if epoch % evaluate_every == 0:
             eval_panrep(model=model, dataloader=valid_loader)
+    ## Evaluate before finetune
+    model.eval()
+    if use_cuda:
+        model.cpu()
+        model.encoder.cpu()
+        g=g.to(torch.device("cpu"))
+    with torch.no_grad():
+        embeddings = model.encoder.forward(g)
+    if use_cuda:
+        model.cuda()
+        model.encoder.cuda()
+        g=g.to(device)
 
+    feats = embeddings[category]
+    #mlp_classifier(feats,use_cuda,args,num_classes,labels,train_idx,val_idx,test_idx,device)
+    labels_i=np.argmax(labels.cpu().numpy(),axis=1)
+    svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std,macro_str,micro_str = evaluate_results_nc(
+        feats[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
     ## Finetune PanRep
     # add the target category in the sampler
     sampler = InfomaxNodeRecNeighborSampler(g, [fanout] * (n_layers), device=device, full_neighbor=True,category=category)
@@ -239,6 +259,7 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
                         collate_fn=sampler.sample_blocks,
                         shuffle=True,
                         num_workers=0)
+
 
     # validation sampler
     val_sampler = HeteroNeighborSampler(g, category, [fanout] * n_layers, True)
@@ -322,27 +343,30 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
     feats = embeddings[category]
     #mlp_classifier(feats,use_cuda,args,num_classes,labels,train_idx,val_idx,test_idx,device)
     labels_i=np.argmax(labels.cpu().numpy(),axis=1)
-    svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std,macro_str,micro_str = evaluate_results_nc(
+    svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std,finmacro_str,finmicro_str = evaluate_results_nc(
         feats[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
     print("With logits")
     svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std, macro_str_log, micro_str_log = evaluate_results_nc(
         logits[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
-    return "Test accuracy: {:4f} |".format(acc)+macro_str+micro_str+" Logits: "+macro_str_log+micro_str_log
+    return " | PanRep " +macro_str+" "+micro_str+ " | Test accuracy: {:4f} | ".format(acc)+" | Finetune "+finmacro_str+" "+finmicro_str+" Logits: "+macro_str_log+" "+micro_str_log
 
 def fit(args):
-        n_epochs_list = [2]#[250,300]
-        n_fine_tune_epochs_list=[1]#[30,50,150]
-        n_hidden_list = [50]#[40,200,400]
+
+        n_epochs_list = [100, 200, 400, 600, 800]  # [250,300]
+        n_hidden_list = [50, 100, 300, 500, 700]  # [40,200,400]
+        n_fine_tune_epochs_list=[20,50]#[30,50,150]
         n_layers_list = [2]#[2,3]#[2,3]
         n_bases_list = [30]
-        lr_list = [1e-4]
+        lr_list = [5*1e-4]
         dropout_list = [0.1]
         fanout_list = [None]
         use_link_prediction_list = [False]
-        use_reconstruction_loss_list =[True]#[True,False]
-        use_infomax_loss_list = [True]#[False,True]
-        use_node_motif_list = [True]#[True,False]
-        num_cluster_list=[20]
+        use_reconstruction_loss_list =[True,False]
+        use_infomax_loss_list = [False,True]
+        use_node_motif_list = [True,False]
+        num_cluster_list=[5]
+        K_list=[2,5,10,15]
+        motif_cluster_list=[5]
         mask_links_list = [False]
         use_self_loop_list=[False]
         single_layer_list=[False]
@@ -363,42 +387,46 @@ def fit(args):
                                                             for use_node_motif in use_node_motif_list:
                                                                 for num_cluster in num_cluster_list:
                                                                     for single_layer in single_layer_list:
-                                                                        if not use_reconstruction_loss and not \
-                                                                                use_infomax_loss and not use_link_prediction\
-                                                                                and not use_node_motif:
-                                                                            continue
-                                                                        else:
-                                                                            acc=_fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
-                                                                                     use_link_prediction, use_reconstruction_loss,
-                                                                                     use_infomax_loss, mask_links, use_self_loop,
-                                                                                 use_node_motif,num_cluster,single_layer,args)
-                                                                            results[(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
-                                                                                     use_link_prediction, use_reconstruction_loss,
-                                                                                     use_infomax_loss, mask_links, use_self_loop,
-                                                                                 use_node_motif,num_cluster,single_layer)]=acc
+                                                                        for motif_cluster in motif_cluster_list:
+                                                                            for k_fold in K_list:
+                                                                                if not use_reconstruction_loss and not \
+                                                                                        use_infomax_loss and not use_link_prediction\
+                                                                                        and not use_node_motif:
+                                                                                    continue
+                                                                                else:
+                                                                                    acc=_fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
+                                                                                             use_link_prediction, use_reconstruction_loss,
+                                                                                             use_infomax_loss, mask_links, use_self_loop,
+                                                                                         use_node_motif,num_cluster,single_layer,
+                                                                                             motif_cluster,k_fold,args)
+                                                                                    results[(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
+                                                                                             use_link_prediction, use_reconstruction_loss,
+                                                                                             use_infomax_loss, mask_links, use_self_loop,
+                                                                                         use_node_motif,num_cluster,single_layer,motif_cluster,k_fold)]=acc
 
-                                                                            result = "PanRep-RGCN Model, n_epochs {}; n_fine_tune_epochs {}; n_hidden {}; n_layers {}; n_bases {}; " \
-                                                                                     "fanout {}; lr {}; dropout {} use_reconstruction_loss {} " \
-                                                                                     "use_link_prediction {} use_infomax_loss {} mask_links {} " \
-                                                                                     "use_self_loop {} use_node_motif {} num_cluster {} single_layer {} acc {}".format(
-                                                                                n_epochs,
-                                                                                n_fine_tune_epochs,
-                                                                                n_hidden,
-                                                                                n_layers,
-                                                                                n_bases,
-                                                                                0,
-                                                                                lr,
-                                                                                dropout,
-                                                                                use_reconstruction_loss,
-                                                                                use_link_prediction,
-                                                                                use_infomax_loss,
-                                                                                mask_links,use_self_loop,use_node_motif,
-                                                                                num_cluster,single_layer,acc)
-                                                                            print(result)
+                                                                                    result = "PanRep-RGCN Model, n_epochs {}; n_fine_tune_epochs {}; n_hidden {}; n_layers {}; n_bases {}; " \
+                                                                                             "fanout {}; lr {}; dropout {} use_reconstruction_loss {} " \
+                                                                                             "use_link_prediction {} use_infomax_loss {} mask_links {} " \
+                                                                                             "use_self_loop {} use_node_motif {} num_cluster {}" \
+                                                                                             " single_layer {} motif_cluster {} k_fold {} acc {}".format(
+                                                                                        n_epochs,
+                                                                                        n_fine_tune_epochs,
+                                                                                        n_hidden,
+                                                                                        n_layers,
+                                                                                        n_bases,
+                                                                                        0,
+                                                                                        lr,
+                                                                                        dropout,
+                                                                                        use_reconstruction_loss,
+                                                                                        use_link_prediction,
+                                                                                        use_infomax_loss,
+                                                                                        mask_links,use_self_loop,use_node_motif,
+                                                                                        num_cluster,single_layer,motif_cluster,k_fold,acc)
+                                                                                    print(result)
         results[str(args)]=1
         file=str(datetime.date(datetime.now()))+"-"+str(datetime.time(datetime.now()))
-        pickle.dump(results,open(os.path.join("results/", file+".pickle"), "wb"),
-                protocol=4)
+        pickle.dump(results, open(os.path.join("results/finetune_node_classification/", file + ".pickle"), "wb"),
+                    protocol=4)
         return
 
 def kmeans_test(X, y, n_clusters, repeat=10):
@@ -531,12 +559,12 @@ def mlp_classifier(feats,use_cuda,n_hidden,lr_d,n_cepochs,args,num_classes,label
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='PanRep')
+    parser = argparse.ArgumentParser(description='PanRep-FineTune')
     parser.add_argument("--dropout", type=float, default=0.2,
             help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=60,
             help="number of hidden units") # use 16, 2 for debug
-    parser.add_argument("--gpu", type=int, default=2,
+    parser.add_argument("--gpu", type=int, default=7,
             help="gpu")
     parser.add_argument("--lr", type=float, default=1e-3,
             help="learning rate")
