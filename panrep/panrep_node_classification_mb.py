@@ -181,7 +181,14 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_pre
                              use_cuda=use_cuda)
 
     if args.rw_supervision:
-        metapathRWSupervision = MetapathRWalkerSupervision(in_dim=n_hidden,device=device)
+        mrw_interact = {}
+        for ntype in g.ntypes:
+            mrw_interact[ntype]=[]
+            for neighbor_ntype in g.ntypes:
+                mrw_interact[ntype] +=[neighbor_ntype]
+
+        metapathRWSupervision = MetapathRWalkerSupervision(in_dim=n_hidden, negative_rate=5,
+                                                           device=device,mrw_interact=mrw_interact)
         model.metapathRWSupervision =metapathRWSupervision
     if use_cuda:
         model.cuda()
@@ -252,7 +259,7 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_pre
                                                                  rw_neighbors=rw_neighbors)
                 print("Loss rw time" +str(time.time()-trw))
                 print("meta_loss: {:.4f}".format(meta_loss.item()))
-            loss=loss+meta_loss
+                loss=loss+meta_loss
             loss.backward()
             optimizer.step()
 
@@ -291,7 +298,7 @@ def fit(args):
         n_hidden_list = [50,100,300,500,700]#[40,200,400]
         n_layers_list = [2]#[2,3]#[2,3]
         n_bases_list = [30]
-        lr_list = [5*1e-4]
+        lr_list = [1e-2]
         dropout_list = [0.1]
         fanout_list = [None]
         use_link_prediction_list = [False]
@@ -357,7 +364,7 @@ def fit(args):
                                                                                         num_motif_cluster, use_meta_rw_loss,acc)
                                                                                     print(result)
         results[str(args)]=1
-        file=str(datetime.date(datetime.now()))+"-"+str(datetime.time(datetime.now()))
+        file=args.dataset+'-'+str(datetime.date(datetime.now()))+"-"+str(datetime.time(datetime.now()))
         pickle.dump(results,open(os.path.join("results/panrep_node_classification/", file+".pickle"), "wb"),
                 protocol=4)
         return
@@ -498,7 +505,7 @@ if __name__ == '__main__':
             help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=60,
             help="number of hidden units") # use 16, 2 for debug
-    parser.add_argument("--gpu", type=int, default=2,
+    parser.add_argument("--gpu", type=int, default=5,
             help="gpu")
     parser.add_argument("--lr", type=float, default=1e-3,
             help="learning rate")
@@ -557,7 +564,7 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'imdb_preprocessed','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'dblp_preprocessed','--encoder', 'RGCN'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     fit(args)

@@ -47,7 +47,7 @@ def load_hetero_data(args):
     elif args.dataset == "imdb_preprocessed":
         train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types,rw_neighbors= load_imdb_preprocessed_data(args)
     elif args.dataset == "dblp_preprocessed":
-        train_idx, test_idx, val_idx, labels, g, category, num_classes, masked_node_types = load_dblp_preprocessed_data(
+        train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types,rw_neighbors= load_dblp_preprocessed_data(
             args)
     elif args.dataset == "imdb_pre_xiang":
         train_idx, test_idx, val_idx, labels, g, category, num_classes, masked_node_types = load_imdb_prexiang_preprocessed_data(
@@ -535,9 +535,9 @@ def load_imdb_preprocessed_data(args):
         G = pickle.load(open(os.path.join(data_folder, 'graph.pickle'), "rb")).to(torch.device("cpu"))
     metapaths = {}
     if args.rw_supervision:
-        metapaths['actor'] = ['played',  'played_by'] * 1
-        metapaths['director'] = ['directed','directed_by'] * 1
-        metapaths['movie'] = ['played_by', 'played'] * 1
+        metapaths['actor'] = ['played',  'played_by'] * 2
+        metapaths['director'] = ['directed','directed_by'] * 2
+        metapaths['movie'] = ['played_by', 'played'] * 2
 
     labels = pickle.load(open(os.path.join(data_folder, 'labels.pickle'), "rb"))
 
@@ -606,9 +606,10 @@ def load_dblp_preprocessed_data(args):
     # In[13]:
     # load to cpu for very large graphs
     if args.use_node_motifs:
-        G = pickle.load(open(os.path.join(data_folder, 'graph_node_motifs.pickle'), "rb")).to(torch.device("cpu"))
+        motif_G = pickle.load(open(os.path.join(data_folder, 'graph_node_motifs.pickle'), "rb")).to(torch.device("cpu"))
+        G = pickle.load(open(os.path.join(data_folder, 'graph.pickle'), "rb")).to(torch.device("cpu"))
         for ntype in G.ntypes:
-            G.nodes[ntype].data['motifs'] = G.nodes[ntype].data['motifs'].float()
+            G.nodes[ntype].data['motifs'] = motif_G.nodes[ntype].data['motifs'].float()
         G = keep_frequent_motifs(G)
         G = motif_distribution_to_zero_one(G,args)
     else:
@@ -617,7 +618,12 @@ def load_dblp_preprocessed_data(args):
     train_val_test_idx = np.load(data_folder + 'train_val_test_idx.npz')
 
     print(G)
-
+    metapaths = {}
+    if args.rw_supervision:
+        multiplicity=4
+        metapaths['paper'] = ['writted_by',  'writes'] * multiplicity
+        metapaths['conference'] = ['includes','writted_by',  'writes','prereseted_in'] * multiplicity
+        metapaths['author'] = ['writes', 'writted_by'] * multiplicity
 
     print(labels)
 
@@ -644,7 +650,7 @@ def load_dblp_preprocessed_data(args):
         for ntype in G.ntypes:
             if G.nodes[ntype].data.get("h_f", None) is not None:
                 G.nodes[ntype].data['h_clusters']=compute_cluster_assignemnts(G.nodes[ntype].data['h_f'],cluster_number=args.num_clusters)
-    return train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types
+    return train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types,metapaths
 
 def load_imdb_data(args):
     use_cuda = args.gpu

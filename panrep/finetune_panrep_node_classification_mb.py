@@ -73,12 +73,13 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
     else:
         args.use_cluster = False
     args.k_fold=k_fold
+    args.rw_supervision = False
     args.motif_clusters=motif_cluster
     args.use_node_motifs=use_node_motif
-    train_idx, test_idx, val_idx, labels, g, category, num_classes, masked_node_types=\
+    train_idx, test_idx, val_idx, labels, g, category, num_classes, masked_node_types,metapaths=\
         load_hetero_data(args)
 
-    multilabel=True
+
     # sampler parameters
     batch_size = 8*1024
     l2norm=0.0001
@@ -268,27 +269,73 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
     # test sampler
     test_sampler = HeteroNeighborSampler(g, category, [fanout] * n_layers, True)
     _, test_blocks = test_sampler.sample_blocks(test_idx)
+    # set up fine_tune epochs
+    n_init_fine_epochs=0
+    n_fine_tune_epochs=n_fine_tune_epochs-n_init_fine_epochs
 
-    # optimizer
 
+    # donwstream classifier
+    multilabel = True
     model.classifier=ClassifierMLP(input_size=n_hidden,hidden_size=n_hidden,out_size=num_classes)
+    if multilabel is False:
+        loss_func = torch.nn.CrossEntropyLoss()
+    else:
+        loss_func = torch.nn.BCEWithLogitsLoss()
+    if use_cuda:
+        model.cuda()
+        feats=feats.cuda()
+    labels=labels.float()
+    best_test_acc=0
+    best_val_acc=0
     #NodeClassifierRGCN(in_dim= n_hidden,out_dim=num_classes, rel_names=g.etypes,num_bases=n_bases)
+    optimizer_init = torch.optim.Adam(model.classifier.parameters(), lr=lr, weight_decay=l2norm)
+    for epoch in range(n_init_fine_epochs):
+            model.classifier.train()
+            optimizer.zero_grad()
+            t0 = time.time()
+            lbl = labels
+            logits = model.classifier.forward(feats)
+            loss = F.binary_cross_entropy_with_logits(logits[train_idx].squeeze(1),
+                                                      lbl[train_idx].type(torch.FloatTensor).to(device))
+            loss.backward()
+            optimizer_init.step()
+            pred = torch.sigmoid(logits).detach().cpu().numpy()
+            train_acc = roc_auc_score(labels.cpu()[train_idx].numpy(),
+                                      pred[train_idx], average='macro')
+            val_acc = roc_auc_score(labels.cpu()[val_idx].numpy(),
+                                    pred[val_idx], average='macro')
+            test_acc = roc_auc_score(labels.cpu()[test_idx].numpy()
+                                     , pred[test_idx], average='macro')
+            test_acc_w = roc_auc_score(labels.cpu()[test_idx].numpy()
+                                       , pred[test_idx], average='weighted')
+            if best_val_acc < val_acc:
+                best_val_acc = val_acc
+                best_test_acc = test_acc
+
+            if epoch % 5 == 0:
+                print(
+                    'Loss %.4f, Train Acc %.4f, Val Acc %.4f (Best %.4f), Test Acc %.4f (Best %.4f), Weighted Test Acc %.4f' % (
+                        loss.item(),
+                        train_acc.item(),
+                        val_acc.item(),
+                        best_val_acc.item(),
+                        test_acc.item(),
+                        best_test_acc.item(), test_acc_w.item()
+                    ))
+    print()
+
+
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=l2norm)
     # training loop
     print("start training...")
     forward_time = []
     backward_time = []
     model.train()
-    if multilabel is False:
-        loss_func = torch.nn.CrossEntropyLoss()
-    else:
-        loss_func = torch.nn.BCEWithLogitsLoss()
-    # training loop
-    print("start training...")
+
     dur = []
-    if use_cuda:
-        model.cuda()
-    labels=labels.float()
+
+
+
     for epoch in range(n_fine_tune_epochs):
         model.train()
         optimizer.zero_grad()
@@ -352,21 +399,21 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
 
 def fit(args):
 
-        n_epochs_list = [100, 200, 400, 600, 800]  # [250,300]
-        n_hidden_list = [50, 100, 300, 500, 700]  # [40,200,400]
-        n_fine_tune_epochs_list=[20,50]#[30,50,150]
+        n_epochs_list = [50, 250, 500, 750]  # [250,300]
+        n_hidden_list = [300]#[50, 100, 300, 500, 700]  # [40,200,400]
+        n_fine_tune_epochs_list= [50]#[20,50]#[30,50,150]
         n_layers_list = [2]#[2,3]#[2,3]
         n_bases_list = [30]
         lr_list = [5*1e-4]
         dropout_list = [0.1]
         fanout_list = [None]
         use_link_prediction_list = [False]
-        use_reconstruction_loss_list =[True,False]
+        use_reconstruction_loss_list =[False,True]#,False]
         use_infomax_loss_list = [False,True]
-        use_node_motif_list = [True,False]
-        num_cluster_list=[5]
-        K_list=[2,5,10,15]
-        motif_cluster_list=[5]
+        use_node_motif_list = [True]
+        num_cluster_list=[6]
+        K_list=[0,5]#[2,5,10,15]
+        motif_cluster_list=[2,4,6,8,10]
         mask_links_list = [False]
         use_self_loop_list=[False]
         single_layer_list=[False]
@@ -424,7 +471,7 @@ def fit(args):
                                                                                         num_cluster,single_layer,motif_cluster,k_fold,acc)
                                                                                     print(result)
         results[str(args)]=1
-        file=str(datetime.date(datetime.now()))+"-"+str(datetime.time(datetime.now()))
+        file=args.dataset+'-'+str(datetime.date(datetime.now()))+"-"+str(datetime.time(datetime.now()))
         pickle.dump(results, open(os.path.join("results/finetune_node_classification/", file + ".pickle"), "wb"),
                     protocol=4)
         return
@@ -564,7 +611,7 @@ if __name__ == '__main__':
             help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=60,
             help="number of hidden units") # use 16, 2 for debug
-    parser.add_argument("--gpu", type=int, default=7,
+    parser.add_argument("--gpu", type=int, default=6,
             help="gpu")
     parser.add_argument("--lr", type=float, default=1e-3,
             help="learning rate")
