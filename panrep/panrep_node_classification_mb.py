@@ -158,7 +158,17 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_pre
                                             use_self_loop=use_self_loop)
 
 
+    if use_meta_rw_loss:
+        mrw_interact = {}
+        for ntype in g.ntypes:
+            mrw_interact[ntype]=[]
+            for neighbor_ntype in g.ntypes:
+                mrw_interact[ntype] +=[neighbor_ntype]
 
+        metapathRWSupervision = MetapathRWalkerSupervision(in_dim=n_hidden, negative_rate=5,
+                                                           device=device,mrw_interact=mrw_interact)
+    else:
+        metapathRWSupervision=None
 
     model = PanRepHetero(
                              n_hidden,
@@ -178,18 +188,10 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_pre
                              out_motif_dict=out_motif_dict,
                              use_cluster=num_cluster>0,
                              single_layer=single_layer,
-                             use_cuda=use_cuda)
+                             use_cuda=use_cuda,
+                             metapathRWSupervision=metapathRWSupervision)
 
-    if args.rw_supervision:
-        mrw_interact = {}
-        for ntype in g.ntypes:
-            mrw_interact[ntype]=[]
-            for neighbor_ntype in g.ntypes:
-                mrw_interact[ntype] +=[neighbor_ntype]
 
-        metapathRWSupervision = MetapathRWalkerSupervision(in_dim=n_hidden, negative_rate=5,
-                                                           device=device,mrw_interact=mrw_interact)
-        model.metapathRWSupervision =metapathRWSupervision
     if use_cuda:
         model.cuda()
 
@@ -250,16 +252,11 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_pre
                 trw = time.time()
                 rw_neighbors=generate_rwalks(g=g,metapaths=metapaths,samples_per_node=10,device=device)
                 # TODO optimize the rw generate inside the sampler in the reduced graph.
+                #
                 print("Generate walks time" +str(time.time()-trw))
             #find intersection of seed ids and of the rwneighbors. Positive samples... Negative random shuffle.
-            loss, embeddings = model.forward_mb(p_blocks=blocks)
-            if use_meta_rw_loss:
-                trw = time.time()
-                meta_loss = model.metapathRWSupervision.get_loss(g=blocks[-1], embed=embeddings,
-                                                                 rw_neighbors=rw_neighbors)
-                print("Loss rw time" +str(time.time()-trw))
-                print("meta_loss: {:.4f}".format(meta_loss.item()))
-                loss=loss+meta_loss
+            loss, embeddings = model.forward_mb(p_blocks=blocks,rw_neighbors=rw_neighbors)
+
             loss.backward()
             optimizer.step()
 
@@ -302,10 +299,10 @@ def fit(args):
         dropout_list = [0.1]
         fanout_list = [None]
         use_link_prediction_list = [False]
-        use_reconstruction_loss_list =[False]
+        use_reconstruction_loss_list =[True]
         use_meta_rw_loss_list = [True]
-        use_infomax_loss_list = [False]
-        use_node_motif_list = [False]
+        use_infomax_loss_list = [True]
+        use_node_motif_list = [True]
         num_cluster_list=[0]
         num_motif_cluster_list = [5]
         mask_links_list = [False]
@@ -564,7 +561,7 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'dblp_preprocessed','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'imdb_preprocessed','--encoder', 'RGCN'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     fit(args)

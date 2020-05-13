@@ -71,9 +71,9 @@ class RelGraphConvHetero(nn.Module):
             nn.init.zeros_(self.h_bias)
 
         # weight for self loop
-        if self.self_loop:
-            self.loop_weight = nn.Parameter(torch.Tensor(in_feat, out_feat))
-            nn.init.xavier_uniform_(self.loop_weight,
+        #if self.self_loop:
+        self.loop_weight = nn.Parameter(torch.Tensor(in_feat, out_feat))
+        nn.init.xavier_uniform_(self.loop_weight,
                                     gain=nn.init.calculate_gain('relu'))
 
         self.dropout = nn.Dropout(dropout)
@@ -105,7 +105,7 @@ class RelGraphConvHetero(nn.Module):
         list of torch.Tensor
             New node features for each node type.
         """
-        g = g.local_var()
+        #g = g.local_var()
         for i, ntype in enumerate(g.ntypes):
             g.nodes[ntype].data['x'] = xs[ntype]
         ws = self.basis_weight()
@@ -125,6 +125,8 @@ class RelGraphConvHetero(nn.Module):
         for ntype in g.ntypes:
             if 'h' in g.nodes[ntype].data:
                 hs[ntype] = g.nodes[ntype].data['h']
+            else:
+                hs[ntype]=torch.matmul(xs[ntype][:g.number_of_nodes(ntype)], self.loop_weight)
 
         def _apply(h,ntype):
             # apply bias and activation
@@ -154,9 +156,10 @@ class RelGraphConvHetero(nn.Module):
         list of torch.Tensor
             New node features for each node type.
         """
-        g = g.local_var()
+        #g = g.local_var()
         for ntype, x in xs.items():
-            g.srcnodes[ntype].data['x'] = x
+            if ntype in g.srctypes:
+                g.srcnodes[ntype].data['x'] = x
 
         ws = self.basis_weight()
         funcs = {}
@@ -173,6 +176,8 @@ class RelGraphConvHetero(nn.Module):
         for ntype in g.dsttypes:
             if 'h' in g.dstnodes[ntype].data:
                 hs[ntype] = g.dstnodes[ntype].data['h']
+            else:
+                hs[ntype]=torch.matmul(xs[ntype][:g.number_of_dst_nodes(ntype)], self.loop_weight)
         def _apply(h,ntype):
             # apply bias and activation
             if self.self_loop:

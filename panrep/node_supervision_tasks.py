@@ -18,13 +18,15 @@ class MetapathRWalkerSupervision(nn.Module):
             if self.num_hidden_layers==0:
                 out_dim=in_dim
             self.mrw_interact=mrw_interact
-            self.w_relation={}
+            w_relation={}
+            self.w_relation=nn.ParameterDict()
             for ntype in mrw_interact.keys():
                 for neighbor_ntype in mrw_interact[ntype]:
-                    ename=(ntype,neighbor_ntype)
-                    self.w_relation[ename] = nn.Parameter(torch.Tensor(out_dim, 1)).to(self.device)
-                    nn.init.xavier_uniform_(self.w_relation[ename],
+                    ename=ntype+neighbor_ntype
+                    w_relation[ename] = nn.Parameter(torch.Tensor(out_dim, 1))
+                    nn.init.xavier_uniform_(w_relation[ename],
                                             gain=nn.init.calculate_gain('relu'))
+            self.w_relation.update(w_relation)
         def calc_score(self, head_embed, tail_embed,etype):
                 # DistMult
                 s = head_embed
@@ -69,7 +71,7 @@ class MetapathRWalkerSupervision(nn.Module):
                             tail_ids = neighbors_ids_in_sampled_g[:, 2]  # tail id?
                             tail_embedding = embed[neighbo_ntype][tail_ids]
                             head_embedding = embed[ntype][head_id]
-                            etype=(ntype,neighbo_ntype)
+                            etype=ntype+neighbo_ntype
                             pos_cur_score = self.calc_score(head_embedding, tail_embedding,etype)
                             predict_loss += F.binary_cross_entropy_with_logits(pos_cur_score,
                                                                                torch.ones((tail_embedding.shape[0]), device=self.device))
@@ -212,22 +214,65 @@ class LinkPredictorDistMultMB(nn.Module):
                                                                 t_neg_score.detach(),
                                                                 self.regularization_coef * reg_loss.detach()))
         return predict_loss + self.regularization_coef * reg_loss
-
-class LinkPredictor(nn.Module):
-    def __init__(self, out_dim, etypes, ntype2id,reg_param=0,use_cuda=False):
-        super(LinkPredictor, self).__init__()
+class LinkPredictorLearnableEmbed(nn.Module):
+    def __init__(self, out_dim, etypes, ntype2id,reg_param=0,use_cuda=False,edg_pct=0.8,ng_rate=5,activation=nn.ReLU(),filtered=False):
+        super(LinkPredictorLearnableEmbed, self).__init__()
         self.reg_param = reg_param
         self.etypes=etypes
-        self.w_relation={}
+        self.w_relation=nn.ParameterDict()
+        self.ng_rate=ng_rate
+        self.filtered = filtered
         self.ntype2id=ntype2id
-        for ename in self.etypes:
-            if use_cuda:
-                self.w_relation[ename] = nn.Parameter(torch.Tensor(out_dim,1)).cuda()
-            else:
-                self.w_relation[ename] = nn.Parameter(torch.Tensor(out_dim,1))
-            nn.init.xavier_uniform_(self.w_relation[ename],
-                                gain=nn.init.calculate_gain('relu'))
+        self.edg_pct=edg_pct
+        self.use_cuda=use_cuda
+        self.out_dim=out_dim
+        # TODO Parameterize per node type pairs!!
+        layers=[]
+        layers.append(nn.Linear(2*self.out_dim, 2*self.out_dim))
+        layers.append(activation)
+        layers.append(nn.Linear(2*self.out_dim, self.out_dim, bias=True))
+        self.weight = nn.Sequential(*layers)
 
+
+    def calc_pos_score_with_rids(self, h_emb, t_emb, rids,etypes2ids,device=None):
+        # DistMult
+        w_relation_mat = torch.zeros((len(self.w_relation), self.out_dim)).to(device)
+        for etype in etypes2ids.keys():
+            w_relation_mat[etypes2ids[etype], :] = self.w_relation[etype].squeeze()
+        r = w_relation_mat[rids]
+        score = torch.sum(h_emb * r * t_emb, dim=-1)
+        return score
+
+    def calc_neg_tail_score(self, heads, tails, rids, num_chunks, chunk_size, neg_sample_size,etypes2ids, device=None):
+        hidden_dim = heads.shape[1]
+        w_relation_mat = torch.zeros((len(self.w_relation), self.out_dim)).to(device)
+        for etype in etypes2ids.keys():
+            w_relation_mat[etypes2ids[etype], :] = self.w_relation[etype].squeeze()
+        r = w_relation_mat[rids]
+
+        if device is not None:
+            r = r.to(device)
+            heads = heads.to(device)
+            tails = tails.to(device)
+        tails = tails.reshape(num_chunks, neg_sample_size, hidden_dim)
+        tails = torch.transpose(tails, 1, 2)
+        tmp = (heads * r).reshape(num_chunks, chunk_size, hidden_dim)
+        return torch.bmm(tmp, tails)
+
+    def calc_neg_head_score(self, heads, tails, rids, num_chunks, chunk_size, neg_sample_size,etypes2ids, device=None):
+        hidden_dim = tails.shape[1]
+        w_relation_mat = torch.zeros((len(self.w_relation), self.out_dim)).to(device)
+        for etype in etypes2ids.keys():
+            w_relation_mat[etypes2ids[etype], :] = self.w_relation[etype].squeeze()
+        r = w_relation_mat[rids]
+        if device is not None:
+            r = r.to(device)
+            heads = heads.to(device)
+            tails = tails.to(device)
+        heads = heads.reshape(num_chunks, neg_sample_size, hidden_dim)
+        heads = torch.transpose(heads, 1, 2)
+        tmp = (tails * r).reshape(num_chunks, chunk_size, hidden_dim)
+        return torch.bmm(tmp, heads)
 
     def calc_score(self, g,embedding, dict_s_d):
         # DistMult
@@ -241,6 +286,19 @@ class LinkPredictor(nn.Module):
             score[etype] = torch.sum(s * r * o, dim=1)
         return score
 
+    def calc_score_mb(self, g,embedding, dict_s_d):
+        # DistMult
+        score = {}
+        for etype in dict_s_d.keys():
+            (stype, e, dtype)=g.to_canonical_etype(etype)
+            s = embedding[stype][dict_s_d[etype][0]]
+
+            o = embedding[dtype][dict_s_d[etype][1]]
+
+            r = self.weight(torch.cat((s,o),axis=1)).mean(axis=0).repeat((o.shape[0],1))
+            score[etype] = torch.sum(s * r * o, dim=1)
+        return score
+
     def regularization_loss(self, embedding):
             loss=0
             for e in embedding:
@@ -249,6 +307,7 @@ class LinkPredictor(nn.Module):
             for e in self.w_relation.keys():
                 loss+=torch.mean(self.w_relation[e].pow(2))
             return loss
+
     def forward(self, g,embed, edict_s_d, e_dict_labels):
         # triplets is a list of data samples (positive and negative)
         # each row in the triplets is a 3-tuple of (source, relation, destination)
@@ -260,6 +319,247 @@ class LinkPredictor(nn.Module):
         # TODO implement regularization
 
         reg_loss = self.regularization_loss(embed)
+
+        return predict_loss + self.reg_param * reg_loss
+
+    def generate_samples(self,g):
+        # TODO move to dataloader so that it is faster
+        edg_pct=self.edg_pct
+        ng_rate=self.ng_rate
+        filtered=self.filtered
+        e_dict_labels={}
+        edict_s_d={}
+        for etype in g.etypes:
+            u, v = g.all_edges(etype=etype)
+            (srctype, ety, desttype) = g.to_canonical_etype(etype)
+            # keep only pairs of nodes between dstnodes
+            src_len = g.dstnodes[srctype].data['_ID'].shape[0]
+            dest_len = g.dstnodes[desttype].data['_ID'].shape[0]
+            src_nodes_in_dest = u < src_len
+            if src_len==0 or dest_len==0 or torch.sum(src_nodes_in_dest)==0:
+                continue
+            else:
+                pos_head = u[src_nodes_in_dest]
+                pos_tail = v[src_nodes_in_dest]
+                # filter for edg_pct
+                pos_head = pos_head[:int(edg_pct * pos_head.shape[0])]
+                pos_tail = pos_tail[:int(edg_pct * pos_tail.shape[0])]
+                size_of_batch = pos_head.shape[0]
+                labels = torch.zeros(size_of_batch * (ng_rate + 1)).float()
+                if self.use_cuda:
+                    labels=labels.cuda()
+                labels[: size_of_batch] = 1
+                head = pos_head.repeat((ng_rate + 1))
+                tail = pos_tail.repeat((ng_rate + 1))
+                # TODO filter edges
+                #  set_pos_edges ={(1,3),(1,2)}
+                #  set_pos_edges = {(1, 3), (1, 2),(1, 3), (1, 2),(1, 3), (1, 2),(1, 3), (1, 2),(1, 3), (1, 2),(1, 3), (1, 2),(1, 3), (1, 2)}
+                #  neg_edges=set_neg_edges.minus(set_pos_edges)
+                head[size_of_batch:] = torch.randint(src_len, (size_of_batch * ng_rate,))
+                if filtered:
+                    pos_pair = set(tuple(map(tuple, torch.cat((pos_head.unsqueeze(0), pos_tail.unsqueeze(0)), dim=0).transpose(1,0).cpu().numpy())))
+                    neg_pair = set(tuple(map(tuple,torch.cat((head[size_of_batch:].unsqueeze(0),
+                                          tail[size_of_batch:].unsqueeze(0)), dim=0).transpose(1,0).cpu().numpy())))
+                    filt_neg_pair=neg_pair.difference(pos_pair)
+                e_dict_labels[etype]=labels
+                edict_s_d[etype]=(head,tail)
+        return e_dict_labels,edict_s_d
+    def regularization_loss_mb(self, embedding):
+            loss = 0
+            for ntype in embedding.keys():
+                loss += torch.mean(embedding[ntype].pow(2))
+
+            for e in self.w_relation.keys():
+                loss += torch.mean(self.w_relation[e].pow(2))
+            return loss
+    def forward_mb(self, g,embed):
+        # triplets is a list of data samples (positive and negative)
+        # each row in the triplets is a 3-tuple of (source, relation, destination)
+
+        e_dict_labels,edict_s_d=self.generate_samples(g=g)
+        score = self.calc_score_mb(g,embed, edict_s_d)
+        predict_loss=0
+        for etype in e_dict_labels.keys():
+            if len(score[etype])>0:
+                predict_loss += F.binary_cross_entropy_with_logits(score[etype], e_dict_labels[etype])
+
+        # TODO implement regularization
+
+        reg_loss = self.regularization_loss_mb(embed)
+
+        return predict_loss + self.reg_param * reg_loss
+
+class LinkPredictor(nn.Module):
+    def __init__(self, out_dim, etypes, ntype2id,reg_param=0,use_cuda=False,edg_pct=0.8,ng_rate=5,filtered=False):
+        super(LinkPredictor, self).__init__()
+        self.reg_param = reg_param
+        self.etypes=etypes
+        self.w_relation=nn.ParameterDict()
+        self.ng_rate=ng_rate
+        self.filtered = filtered
+        self.ntype2id=ntype2id
+        self.edg_pct=edg_pct
+        self.use_cuda=use_cuda
+        self.out_dim=out_dim
+        #self.params = nn.ParameterDict({ ename: nn.Parameter(torch.Tensor(out_dim,1))  for ename in self.etypes})
+        w_relation={}
+        for ename in self.etypes:
+            w_relation[ename] = nn.Parameter(torch.Tensor(out_dim,1))
+            nn.init.xavier_uniform_(w_relation[ename],
+                                gain=nn.init.calculate_gain('relu'))
+        self.w_relation.update(w_relation)
+    def calc_pos_score_with_rids(self, h_emb, t_emb, rids,etypes2ids,device=None):
+        # DistMult
+        w_relation_mat = torch.zeros((len(self.w_relation), self.out_dim)).to(device)
+        for etype in etypes2ids.keys():
+            w_relation_mat[etypes2ids[etype], :] = self.w_relation[etype].squeeze()
+        r = w_relation_mat[rids]
+        score = torch.sum(h_emb * r * t_emb, dim=-1)
+        return score
+
+    def calc_neg_tail_score(self, heads, tails, rids, num_chunks, chunk_size, neg_sample_size,etypes2ids, device=None):
+        hidden_dim = heads.shape[1]
+        w_relation_mat = torch.zeros((len(self.w_relation), self.out_dim)).to(device)
+        for etype in etypes2ids.keys():
+            w_relation_mat[etypes2ids[etype], :] = self.w_relation[etype].squeeze()
+        r = w_relation_mat[rids]
+
+        if device is not None:
+            r = r.to(device)
+            heads = heads.to(device)
+            tails = tails.to(device)
+        tails = tails.reshape(num_chunks, neg_sample_size, hidden_dim)
+        tails = torch.transpose(tails, 1, 2)
+        tmp = (heads * r).reshape(num_chunks, chunk_size, hidden_dim)
+        return torch.bmm(tmp, tails)
+
+    def calc_neg_head_score(self, heads, tails, rids, num_chunks, chunk_size, neg_sample_size,etypes2ids, device=None):
+        hidden_dim = tails.shape[1]
+        w_relation_mat = torch.zeros((len(self.w_relation), self.out_dim)).to(device)
+        for etype in etypes2ids.keys():
+            w_relation_mat[etypes2ids[etype], :] = self.w_relation[etype].squeeze()
+        r = w_relation_mat[rids]
+        if device is not None:
+            r = r.to(device)
+            heads = heads.to(device)
+            tails = tails.to(device)
+        heads = heads.reshape(num_chunks, neg_sample_size, hidden_dim)
+        heads = torch.transpose(heads, 1, 2)
+        tmp = (tails * r).reshape(num_chunks, chunk_size, hidden_dim)
+        return torch.bmm(tmp, heads)
+
+    def calc_score(self, g,embedding, dict_s_d):
+        # DistMult
+        score={}
+
+        for etype in self.etypes:
+            (stype,e,dtype)=g.to_canonical_etype(etype)
+            s = embedding[self.ntype2id[stype]][dict_s_d[etype][:, 0]]
+            r = self.w_relation[etype].squeeze()
+            o = embedding[self.ntype2id[dtype]][dict_s_d[etype][:, 1]]
+            score[etype] = torch.sum(s * r * o, dim=1)
+        return score
+
+    def calc_score_mb(self, g,embedding, dict_s_d):
+        # DistMult
+        score = {}
+        # TODO maybe represent triplets as three arrays to make it faster.
+        for etype in dict_s_d.keys():
+            (stype, e, dtype)=g.to_canonical_etype(etype)
+            s = embedding[stype][dict_s_d[etype][0]]
+            r = self.w_relation[etype].squeeze()
+            # TODO consider other formulations metapath2vec
+            o = embedding[dtype][dict_s_d[etype][1]]
+            score[etype] = torch.sum(s * r * o, dim=1)
+        return score
+
+    def regularization_loss(self, embedding):
+            loss=0
+            for e in embedding:
+                loss+=torch.mean(e.pow(2))
+
+            for e in self.w_relation.keys():
+                loss+=torch.mean(self.w_relation[e].pow(2))
+            return loss
+
+    def forward(self, g,embed, edict_s_d, e_dict_labels):
+        # triplets is a list of data samples (positive and negative)
+        # each row in the triplets is a 3-tuple of (source, relation, destination)
+        score = self.calc_score(g,embed, edict_s_d)
+        predict_loss=0
+        for etype in self.etypes:
+            predict_loss += F.binary_cross_entropy_with_logits(score[etype], e_dict_labels[etype])
+
+        # TODO implement regularization
+
+        reg_loss = self.regularization_loss(embed)
+
+        return predict_loss + self.reg_param * reg_loss
+
+    def generate_samples(self,g):
+        # TODO move to dataloader so that it is faster
+        edg_pct=self.edg_pct
+        ng_rate=self.ng_rate
+        filtered=self.filtered
+        e_dict_labels={}
+        edict_s_d={}
+        for etype in g.etypes:
+            u, v = g.all_edges(etype=etype)
+            (srctype, ety, desttype) = g.to_canonical_etype(etype)
+            # keep only pairs of nodes between dstnodes
+            src_len = g.dstnodes[srctype].data['_ID'].shape[0]
+            dest_len = g.dstnodes[desttype].data['_ID'].shape[0]
+            src_nodes_in_dest = u < src_len
+            if src_len==0 or dest_len==0 or torch.sum(src_nodes_in_dest)==0:
+                continue
+            else:
+                pos_head = u[src_nodes_in_dest]
+                pos_tail = v[src_nodes_in_dest]
+                # filter for edg_pct
+                pos_head = pos_head[:int(edg_pct * pos_head.shape[0])]
+                pos_tail = pos_tail[:int(edg_pct * pos_tail.shape[0])]
+                size_of_batch = pos_head.shape[0]
+                labels = torch.zeros(size_of_batch * (ng_rate + 1)).float()
+                if self.use_cuda:
+                    labels=labels.cuda()
+                labels[: size_of_batch] = 1
+                head = pos_head.repeat((ng_rate + 1))
+                tail = pos_tail.repeat((ng_rate + 1))
+                # TODO filter edges
+                #  set_pos_edges ={(1,3),(1,2)}
+                #  set_pos_edges = {(1, 3), (1, 2),(1, 3), (1, 2),(1, 3), (1, 2),(1, 3), (1, 2),(1, 3), (1, 2),(1, 3), (1, 2),(1, 3), (1, 2)}
+                #  neg_edges=set_neg_edges.minus(set_pos_edges)
+                head[size_of_batch:] = torch.randint(src_len, (size_of_batch * ng_rate,))
+                if filtered:
+                    pos_pair = set(tuple(map(tuple, torch.cat((pos_head.unsqueeze(0), pos_tail.unsqueeze(0)), dim=0).transpose(1,0).cpu().numpy())))
+                    neg_pair = set(tuple(map(tuple,torch.cat((head[size_of_batch:].unsqueeze(0),
+                                          tail[size_of_batch:].unsqueeze(0)), dim=0).transpose(1,0).cpu().numpy())))
+                    filt_neg_pair=neg_pair.difference(pos_pair)
+                e_dict_labels[etype]=labels
+                edict_s_d[etype]=(head,tail)
+        return e_dict_labels,edict_s_d
+    def regularization_loss_mb(self, embedding):
+            loss = 0
+            for ntype in embedding.keys():
+                loss += torch.mean(embedding[ntype].pow(2))
+
+            for e in self.w_relation.keys():
+                loss += torch.mean(self.w_relation[e].pow(2))
+            return loss
+    def forward_mb(self, g,embed):
+        # triplets is a list of data samples (positive and negative)
+        # each row in the triplets is a 3-tuple of (source, relation, destination)
+
+        e_dict_labels,edict_s_d=self.generate_samples(g=g)
+        score = self.calc_score_mb(g,embed, edict_s_d)
+        predict_loss=0
+        for etype in e_dict_labels.keys():
+            if len(score[etype])>0:
+                predict_loss += F.binary_cross_entropy_with_logits(score[etype], e_dict_labels[etype])
+
+        # TODO implement regularization
+
+        reg_loss = self.regularization_loss_mb(embed)
 
         return predict_loss + self.reg_param * reg_loss
 class AttributeDecoder(nn.Module):
@@ -312,7 +612,7 @@ class NodeMotifDecoder(nn.Module):
         train_acc_auc=0
 
         for name in g.dsttypes:
-            if name in node_embed:
+            if name in node_embed and node_embed[name].shape[0]>0:
                 reconstructed=self.weight[name](node_embed[name])
                 if self.distribution:
                     loss += F.mse_loss(reconstructed, g.dstnodes[name].data['motifs'])
@@ -424,7 +724,7 @@ class MultipleAttributeDecoder(nn.Module):
         total=0
         correct=0
         for name in self.weight:
-            if g.dstnodes[name].data.get(data_param, None) is not None:
+            if g.dstnodes[name].data.get(data_param, None) is not None and node_embed[name].shape[0]>0:
                 reconstructed=self.weight[name](node_embed[name])
                 if bool(masked_nodes):
                     if not self.loss_over_all_nodes:
@@ -434,11 +734,11 @@ class MultipleAttributeDecoder(nn.Module):
 
                 else:
                     loss += self.loss_function(reconstructed, g.dstnodes[name].data[data_param])
-            if self.use_cluster and self.output:
-                _, predicted = torch.max(reconstructed.data, 1)
-                labels = torch.argmax(g.dstnodes[name].data[data_param], dim=1)
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
+                if self.use_cluster and self.output:
+                    _, predicted = torch.max(reconstructed.data, 1)
+                    labels = torch.argmax(g.dstnodes[name].data[data_param], dim=1)
+                    total += labels.size(0)
+                    correct += (predicted == labels).sum().item()
         if self.use_cluster and self.output:
             print('Cluster accuracy: %d %%' % (
                     100 * correct / total))
@@ -507,6 +807,7 @@ class MutualInformationDiscriminator(nn.Module):
         # TODO summary per node type or across all node types? for infomax
 
         for ntype in positives.keys():
+            if positives[ntype].shape[0]>0:
                 positive=positives[ntype]
                 negative=negatives[ntype]
                 summary = torch.sigmoid(positive.mean(dim=0))

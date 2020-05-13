@@ -91,8 +91,7 @@ class HeteroNeighborSampler:
 
         return seeds, blocks
 
-
-class InfomaxNodeRecNeighborSampler:
+class LinkPredictorEvalSampler:
     def __init__(self, g, fanouts, device, full_neighbor=False,category=None):
         """
         if fanouts is None, sample full neighbor
@@ -103,6 +102,8 @@ class InfomaxNodeRecNeighborSampler:
         self.full_neighbor = full_neighbor
         self.category = category
         #self.pct_batch=pct_batch
+        if self.fanouts[0] is None:
+            self.full_neighbor = True
 
 
         counter = itertools.count(0)
@@ -133,7 +134,72 @@ class InfomaxNodeRecNeighborSampler:
             if self.full_neighbor:
                 frontier = dgl.in_subgraph(self.g, cur)
             else:
-                frontier = dgl.setype_key_mapampling.sample_neighbors(self.g, cur, fanout)
+                frontier = dgl.sampling.sample_neighbors(self.g, cur, fanout)
+            block = dgl.to_block(frontier, cur)
+
+            cur = {}
+            for ntype in block.srctypes:
+                cur[ntype] = block.srcnodes[ntype].data[dgl.NID]
+            blocks.insert(0, block)
+        frontier_time=time.time()-frontier_time_s
+        # add features to block nodes in first layer only ?
+
+        for i in range(len(blocks)):
+            blocks[i] = blocks[i].to(device)
+
+        block_sample_time=time.time()-block_sample_s
+        #print('copy time')
+        #print(time_copy)
+        #print('frontier calculation time')
+        #print(frontier_time)
+        #print('overal sampling time')
+        #print(block_sample_time)
+        return seeds, blocks
+
+class InfomaxNodeRecNeighborSampler:
+    def __init__(self, g, fanouts, device, full_neighbor=False,category=None):
+        """
+        if fanouts is None, sample full neighbor
+        """
+        self.g = g
+        self.fanouts = fanouts
+        self.device=device
+        self.full_neighbor = full_neighbor
+        self.category = category
+        #self.pct_batch=pct_batch
+        if self.fanouts[0] is None:
+            self.full_neighbor = True
+
+
+        counter = itertools.count(0)
+        self.hetero_map = {next(counter):(i,ntype)    for ntype in (g.ntypes) for i in range(g.number_of_nodes(ntype))}
+        self.number_of_nodes=len(self.hetero_map)
+
+    def sample_blocks(self, seeds_list):
+        blocks = []
+        seeds={}
+        device = self.device
+        g = self.g
+        block_sample_s = time.time()
+        if self.category is None:
+            seeds_list.sort()
+            for s in seeds_list:
+                nid,ntype=self.hetero_map[s]
+                if ntype not in seeds:
+                    seeds[ntype]=[nid]
+                else:
+                    seeds[ntype]+=[nid]
+            for ntype in seeds:
+                seeds[ntype]=torch.tensor(seeds[ntype])#.to(device)
+        else:
+            seeds = {self.category: torch.tensor(seeds_list).long()}
+        cur = seeds
+        frontier_time_s=time.time()
+        for fanout in self.fanouts:
+            if self.full_neighbor:
+                frontier = dgl.in_subgraph(self.g, cur)
+            else:
+                frontier = dgl.sampling.sample_neighbors(self.g, cur, fanout)
             block = dgl.to_block(frontier, cur)
 
             cur = {}

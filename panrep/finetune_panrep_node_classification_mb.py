@@ -18,10 +18,11 @@ import torch
 import torch.nn.functional as F
 import dgl
 from classifiers import ClassifierMLP
-from load_data import load_hetero_data
+from load_data import load_hetero_data,generate_rwalks
 from model import PanRepHetero
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader
+from node_supervision_tasks import MetapathRWalkerSupervision,LinkPredictor
 from encoders import EncoderRelGraphConvHetero,EncoderRelGraphAttentionHetero
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score, normalized_mutual_info_score, adjusted_rand_score
@@ -66,14 +67,14 @@ def eval_panrep(model,dataloader):
     return
 
 def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_prediction, use_reconstruction_loss,
-         use_infomax_loss, mask_links,use_self_loop,use_node_motif, num_cluster,single_layer,motif_cluster,k_fold,args):
+         use_infomax_loss, mask_links,use_self_loop,use_node_motif, num_cluster,single_layer,motif_cluster,k_fold,rw_supervision,args):
     if num_cluster>0:
         args.use_cluster=True
         args.num_clusters=num_cluster
     else:
         args.use_cluster = False
     args.k_fold=k_fold
-    args.rw_supervision = False
+    args.rw_supervision = rw_supervision
     args.motif_clusters=motif_cluster
     args.use_node_motifs=use_node_motif
     train_idx, test_idx, val_idx, labels, g, category, num_classes, masked_node_types,metapaths=\
@@ -81,7 +82,7 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
 
 
     # sampler parameters
-    batch_size = 8*1024
+    batch_size = 4*1024
     l2norm=0.0001
 
     # check cuda
@@ -147,6 +148,20 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
                                             dropout=dropout,
                                             use_self_loop=use_self_loop)
 
+    metapathRWSupervision = None
+    if rw_supervision:
+        mrw_interact = {}
+        for ntype in g.ntypes:
+            mrw_interact[ntype]=[]
+            for neighbor_ntype in g.ntypes:
+                mrw_interact[ntype] +=[neighbor_ntype]
+
+        metapathRWSupervision = MetapathRWalkerSupervision(in_dim=n_hidden, negative_rate=5,
+                                                           device=device,mrw_interact=mrw_interact)
+    link_predictor = None
+    if use_link_prediction:
+        link_predictor = LinkPredictor(out_dim=n_hidden, etypes=g.etypes,
+                                      ntype2id=ntype2id, use_cuda=use_cuda)
 
     model = PanRepHetero(
                              n_hidden,
@@ -162,11 +177,12 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
                              use_infomax_task=use_infomax_loss,
                              use_reconstruction_task=use_reconstruction_loss,
                              use_node_motif=use_node_motif,
-                             link_prediction_task=link_prediction,
+                             link_predictor=link_predictor,
                              out_motif_dict=out_motif_dict,
                              use_cluster=num_cluster>0,
                              single_layer=single_layer,
-                             use_cuda=use_cuda)
+                             use_cuda=use_cuda,
+                             metapathRWSupervision=metapathRWSupervision)
 
 
     if use_cuda:
@@ -225,8 +241,11 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
 
             if link_prediction:
                 raise NotImplementedError
-
-            loss, embeddings = model.forward_mb(p_blocks=blocks)
+            if rw_supervision:
+                rw_neighbors=generate_rwalks(g=g,metapaths=metapaths,samples_per_node=4,device=device)
+            else:
+                rw_neighbors=None
+            loss, embeddings = model.forward_mb(p_blocks=blocks,rw_neighbors=rw_neighbors)
             loss.backward()
             optimizer.step()
 
@@ -399,21 +418,22 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
 
 def fit(args):
 
-        n_epochs_list = [50, 250, 500, 750]  # [250,300]
-        n_hidden_list = [300]#[50, 100, 300, 500, 700]  # [40,200,400]
+        n_epochs_list =[50, 100, 300]  # [250,300]
+        n_hidden_list = [50, 100, 150]#[50, 100, 300, 500, 700]  # [40,200,400]
         n_fine_tune_epochs_list= [50]#[20,50]#[30,50,150]
-        n_layers_list = [2]#[2,3]#[2,3]
+        n_layers_list = [2,3]#[2,3]#[2,3]
         n_bases_list = [30]
-        lr_list = [5*1e-4]
-        dropout_list = [0.1]
+        lr_list = [1e-3,1e-4]
+        dropout_list = [0.2]
         fanout_list = [None]
         use_link_prediction_list = [False]
-        use_reconstruction_loss_list =[False,True]#,False]
-        use_infomax_loss_list = [False,True]
-        use_node_motif_list = [True]
+        use_reconstruction_loss_list =[True,False]#[False,True]
+        use_infomax_loss_list = [True,False]#[False,True]
+        use_node_motif_list = [True,False]
+        rw_supervision_list=[True,False]
         num_cluster_list=[6]
-        K_list=[0,5]#[2,5,10,15]
-        motif_cluster_list=[2,4,6,8,10]
+        K_list=[0]#[2,5,10,15]
+        motif_cluster_list=[5]#[2,6,10]
         mask_links_list = [False]
         use_self_loop_list=[False]
         single_layer_list=[False]
@@ -435,41 +455,45 @@ def fit(args):
                                                                 for num_cluster in num_cluster_list:
                                                                     for single_layer in single_layer_list:
                                                                         for motif_cluster in motif_cluster_list:
-                                                                            for k_fold in K_list:
-                                                                                if not use_reconstruction_loss and not \
-                                                                                        use_infomax_loss and not use_link_prediction\
-                                                                                        and not use_node_motif:
-                                                                                    continue
-                                                                                else:
-                                                                                    acc=_fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
-                                                                                             use_link_prediction, use_reconstruction_loss,
-                                                                                             use_infomax_loss, mask_links, use_self_loop,
-                                                                                         use_node_motif,num_cluster,single_layer,
-                                                                                             motif_cluster,k_fold,args)
-                                                                                    results[(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
-                                                                                             use_link_prediction, use_reconstruction_loss,
-                                                                                             use_infomax_loss, mask_links, use_self_loop,
-                                                                                         use_node_motif,num_cluster,single_layer,motif_cluster,k_fold)]=acc
+                                                                            for rw_supervision in rw_supervision_list:
+                                                                                for k_fold in K_list:
+                                                                                    if not use_reconstruction_loss and not \
+                                                                                            use_infomax_loss and not use_link_prediction\
+                                                                                            and not use_node_motif and not rw_supervision:
+                                                                                        continue
+                                                                                    else:
+                                                                                        acc=_fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
+                                                                                                 use_link_prediction, use_reconstruction_loss,
+                                                                                                 use_infomax_loss, mask_links, use_self_loop,
+                                                                                             use_node_motif,num_cluster,single_layer,
+                                                                                                 motif_cluster,k_fold,rw_supervision,args)
+                                                                                        results[(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
+                                                                                                 use_link_prediction, use_reconstruction_loss,
+                                                                                                 use_infomax_loss, mask_links, use_self_loop,
+                                                                                             use_node_motif,num_cluster,single_layer,
+                                                                                                 motif_cluster,k_fold,rw_supervision)]=acc
 
-                                                                                    result = "PanRep-RGCN Model, n_epochs {}; n_fine_tune_epochs {}; n_hidden {}; n_layers {}; n_bases {}; " \
-                                                                                             "fanout {}; lr {}; dropout {} use_reconstruction_loss {} " \
-                                                                                             "use_link_prediction {} use_infomax_loss {} mask_links {} " \
-                                                                                             "use_self_loop {} use_node_motif {} num_cluster {}" \
-                                                                                             " single_layer {} motif_cluster {} k_fold {} acc {}".format(
-                                                                                        n_epochs,
-                                                                                        n_fine_tune_epochs,
-                                                                                        n_hidden,
-                                                                                        n_layers,
-                                                                                        n_bases,
-                                                                                        0,
-                                                                                        lr,
-                                                                                        dropout,
-                                                                                        use_reconstruction_loss,
-                                                                                        use_link_prediction,
-                                                                                        use_infomax_loss,
-                                                                                        mask_links,use_self_loop,use_node_motif,
-                                                                                        num_cluster,single_layer,motif_cluster,k_fold,acc)
-                                                                                    print(result)
+                                                                                        result = "PanRep-RGCN Model, n_epochs {}; n_fine_tune_epochs {}; n_hidden {}; n_layers {}; n_bases {}; " \
+                                                                                                 "fanout {}; lr {}; dropout {} use_reconstruction_loss {} " \
+                                                                                                 "use_link_prediction {} use_infomax_loss {} mask_links {} " \
+                                                                                                 "use_self_loop {} use_node_motif {} num_cluster {}" \
+                                                                                                 " single_layer {} motif_cluster {} " \
+                                                                                                 "k_fold {} rw_supervision{} acc {}".format(
+                                                                                            n_epochs,
+                                                                                            n_fine_tune_epochs,
+                                                                                            n_hidden,
+                                                                                            n_layers,
+                                                                                            n_bases,
+                                                                                            0,
+                                                                                            lr,
+                                                                                            dropout,
+                                                                                            use_reconstruction_loss,
+                                                                                            use_link_prediction,
+                                                                                            use_infomax_loss,
+                                                                                            mask_links,use_self_loop,use_node_motif,
+                                                                                            num_cluster,single_layer,motif_cluster,k_fold,
+                                                                                            rw_supervision,acc)
+                                                                                        print(result)
         results[str(args)]=1
         file=args.dataset+'-'+str(datetime.date(datetime.now()))+"-"+str(datetime.time(datetime.now()))
         pickle.dump(results, open(os.path.join("results/finetune_node_classification/", file + ".pickle"), "wb"),
@@ -611,7 +635,7 @@ if __name__ == '__main__':
             help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=60,
             help="number of hidden units") # use 16, 2 for debug
-    parser.add_argument("--gpu", type=int, default=6,
+    parser.add_argument("--gpu", type=int, default=2,
             help="gpu")
     parser.add_argument("--lr", type=float, default=1e-3,
             help="learning rate")
@@ -663,14 +687,14 @@ if __name__ == '__main__':
             help='path for save the model')
     parser.add_argument("--fanout", type=int, default=10,
             help="Fan-out of neighbor sampling.")
-    parser.add_argument("--split", type=int, default=5,
+    parser.add_argument("--split", type=int, default=0,
                         help="split type.")
     fp = parser.add_mutually_exclusive_group(required=False)
     fp.add_argument('--validation', dest='validation', action='store_true')
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'imdb_preprocessed','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'dblp_preprocessed','--encoder', 'RGCN'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     fit(args)

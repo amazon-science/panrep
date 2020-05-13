@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 
 from node_sampling_masking import HeteroNeighborSampler
 from classifiers import ClassifierRGCN,End2EndClassifierRGCN
-from load_data import load_hetero_data
+from load_data import load_hetero_data,load_univ_hetero_data
 from sklearn.metrics import roc_auc_score,accuracy_score
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -68,17 +68,16 @@ def evaluate(model, seeds, blocks, device, labels, category, use_cuda):
 def main(args):
     fit(args)
 
-def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr,dropout, use_self_loop, K,args):
+def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr,dropout, use_self_loop, K, split_pct,args):
     args.use_cluster = False
     args.k_fold=K
     args.motif_clusters=0
     args.use_node_motifs=False
-    train_idx,test_idx,val_idx,labels,g,category,num_classes,masked_node_types= load_hetero_data(args)
-
-    category_id = len(g.ntypes)
-    for i, ntype in enumerate(g.ntypes):
-        if ntype == category:
-            category_id = i
+    args.rw_supervision=False
+    args.splitpct=split_pct
+    train_idx, test_idx, val_idx, labels, category, num_classes, masked_node_types, metapaths, \
+    train_edges, test_edges, valid_edges, train_g, valid_g, test_g = load_univ_hetero_data(args)
+    g = train_g
 
     # check cuda
     use_cuda = args.gpu >= 0 and torch.cuda.is_available()
@@ -216,7 +215,7 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr,dropout, use_self_loo
     test_loss, test_acc,test_acc_auc = evaluate(model, test_idx, test_blocks,device, labels, category,use_cuda)
     print("Test Acc: {:.4f}| Test Acc Auc: {:.4f}  | Test loss: {:.4f}".format(test_acc, test_acc_auc,test_loss.item()))
     print()
-    return "Test Acc: {:.4f} ".format(test_acc)+" "+macro_str+" "+macro_str
+    return "Test Acc: {:.4f} ".format(test_acc)+" "+macro_str+" "+micro_str
 def kmeans_test(X, y, n_clusters, repeat=10):
     nmi_list = []
     ari_list = []
@@ -274,13 +273,14 @@ def evaluate_results_nc(embeddings, labels, num_classes):
 def fit(args):
         n_epochs_list = [100,200,400,600,800]#[250,300]
         n_hidden_list =[50,100,300,500,700]#[40,200,400]
-        n_layers_list = [2]
+        n_layers_list = [1,2]
         n_bases_list = [30]
-        lr_list = [5e-4]
+        lr_list = [1e-3]
         dropout_list = [0.1]
         fanout_list = [None]
         use_self_loop_list = [False]
-        K_list=[2,5,10,15]
+        K_list = [0]
+        split_pct_list=[0.1]
         results={}
         for n_epochs in n_epochs_list:
             for n_hidden in n_hidden_list:
@@ -291,20 +291,21 @@ def fit(args):
                                 for K in K_list:
                                     for dropout in dropout_list:
                                         for use_self_loop in use_self_loop_list:
+                                            for split_pct in split_pct_list:
                                                                     acc=_fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr,
-                                                                         dropout, use_self_loop, K, args)
+                                                                         dropout, use_self_loop, K,split_pct, args)
                                                                     results[(n_epochs, n_layers, n_hidden, n_bases, fanout, lr,
-                                                                         dropout, use_self_loop, K)]=acc
+                                                                         dropout, use_self_loop, K,split_pct)]=acc
                                                                     result = "RGCN Model, n_epochs {}; n_hidden {}; n_layers {}; n_bases {}; " \
                                                                              "fanout {}; lr {}; dropout {}" \
-                                                                             "use_self_loop {} ".format(
+                                                                             "use_self_loop {} K {} split_pct{}".format(
                                                                         n_epochs,
                                                                         n_hidden,
                                                                         n_layers,
                                                                         n_bases,
                                                                         0,
                                                                         lr,
-                                                                        dropout, use_self_loop)
+                                                                        dropout, use_self_loop, K, split_pct)
                                                                     print(result)
         results[str(args)]=1
         file=str(datetime.date(datetime.now()))+"-"+str(datetime.time(datetime.now()))
@@ -319,7 +320,7 @@ if __name__ == '__main__':
             help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=50,
             help="number of hidden units") # use 16, 2 for debug
-    parser.add_argument("--gpu", type=int, default=5,
+    parser.add_argument("--gpu", type=int, default=6,
             help="gpu")
     parser.add_argument("--lr", type=float, default=1e-2,
             help="learning rate")

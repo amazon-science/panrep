@@ -17,7 +17,7 @@ class PanRepHetero(nn.Module):
                  dropout=0, loss_over_all_nodes=False, use_reconstruction_task=True, use_infomax_task=True,
                  link_prediction_task=False,use_cuda=False,average_across_node_types=False,
                  use_node_motif=False,link_predictor=None,out_motif_dict=None, use_cluster=False,
-                 single_layer=False,classifier=None):
+                 single_layer=False,classifier=None,metapathRWSupervision=None):
         super(PanRepHetero, self).__init__()
         self.h_dim = h_dim
         self.out_dim = out_dim
@@ -28,14 +28,21 @@ class PanRepHetero(nn.Module):
         self.link_prediction_task=link_prediction_task
         self.loss_over_all_nodes=loss_over_all_nodes
         self.use_node_motif_task=use_node_motif
+
         self.classifier=classifier
+        if metapathRWSupervision is not None:
+            self.rw_supervision_task = True
+        else:
+            self.rw_supervision_task = False
+        self.metapathRWSupervision=metapathRWSupervision
 
         self.infomax=MutualInformationDiscriminator(n_hidden=h_dim,average_across_node_types=average_across_node_types)
         self.use_cuda = use_cuda
         self.encoder = encoder
         if link_predictor is None:
-            self.linkPredictor = LinkPredictor(out_dim=h_dim,etypes=etypes,ntype2id=ntype2id,use_cuda=use_cuda)
+            self.link_prediction_task = False
         else:
+            self.link_prediction_task=True
             self.linkPredictor=link_predictor
         # create rgcn layers
         # self.encoder.build_model()
@@ -80,6 +87,13 @@ class PanRepHetero(nn.Module):
         for ntype in encoding.keys():
             logits[ntype]=self.classifier.forward(encoding[ntype])
         return logits
+    def link_predictor_forward_mb(self,p_blocks):
+        encoding=self.encoder.forward_mb(p_blocks)
+        link_prediction_loss = self.linkPredictor.forward_mb(g=p_blocks[-1], embed=encoding)
+        link_prediction_loss
+        print("Link prediction loss:{}".format(
+            link_prediction_loss.detach()))
+        return link_prediction_loss
     def classifier_forward(self,g):
         encoding=self.encoder.forward(g)
         logits={}
@@ -87,7 +101,7 @@ class PanRepHetero(nn.Module):
             logits[ntype]=self.classifier.forward(encoding[ntype])
         return logits
     def forward_mb(self, p_blocks, masked_nodes=None, p_g=None, n_g=None, n_blocks=None,
-                   num_chunks=None, chunk_size=None, neg_sample_size=None):
+                   num_chunks=None, chunk_size=None, neg_sample_size=None,rw_neighbors=None):
 
         #h=self.encoder(corrupt=False)
         positive = self.encoder.forward_mb(p_blocks)
@@ -110,11 +124,14 @@ class PanRepHetero(nn.Module):
             print("Node motif loss {}".format(
             motif_loss.detach()))
         if self.link_prediction_task:
-            negative_link_prediction = self.encoder.forward_mb(n_blocks)
-            link_prediction_loss=self.linkPredictor.get_loss(positive, p_g, negative_link_prediction,n_g,
-                                  num_chunks, chunk_size, neg_sample_size)
+            link_prediction_loss=self.linkPredictor.forward_mb(g=p_blocks[-1], embed=positive)
             loss += link_prediction_loss
             print("Link prediction loss:{}".format(
             link_prediction_loss.detach()))
+        if self.rw_supervision_task and rw_neighbors is not None:
+           meta_loss=self.metapathRWSupervision.get_loss(g=p_blocks[-1], embed=positive,
+                                           rw_neighbors=rw_neighbors)
+           loss += meta_loss
+           print("meta_loss: {:.4f}".format(meta_loss.item()))
 
         return loss, positive

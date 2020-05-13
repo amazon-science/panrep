@@ -8,21 +8,29 @@ import torch.nn.functional as F
 
 
 class ClassifierMLP(torch.nn.Module):
-    def __init__(self, input_size, hidden_size,out_size):
+    def __init__(self, input_size, hidden_size,out_size,single_layer=False):
         super(ClassifierMLP, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.out_size=out_size
-        self.fc1 = torch.nn.Linear(self.input_size, self.hidden_size)
-        self.relu = torch.nn.ReLU()
-        self.fc2 = torch.nn.Linear(self.hidden_size, self.out_size)
+        self.single_layer=single_layer
+        if self.single_layer:
+            self.fc1 = torch.nn.Linear(self.input_size, self.out_size)
+        else:
+            self.fc1 = torch.nn.Linear(self.input_size, self.hidden_size)
+            self.relu = torch.nn.ReLU()
+            self.fc2 = torch.nn.Linear(self.hidden_size, self.out_size)
+        self.activation=partial(F.softmax, dim=1)
         #self.sigmoid = torch.nn.Sigmoid()
 
     def forward(self, x):
-        hidden = self.fc1(x)
-        relu = self.relu(hidden)
-        output = self.fc2(relu)
-        #output = self.sigmoid(output)
+        if self.single_layer:
+            output=self.fc1(x)
+        else:
+            hidden = self.fc1(x)
+            relu = self.relu(hidden)
+            output = self.fc2(relu)
+        #output=self.activation(output)
         return output
 class ClassifierRGCN(BaseRGCN):
     def create_features(self):
@@ -119,6 +127,178 @@ class DLinkPredictor(nn.Module):
         reg_loss = self.regularization_loss(embed)
 
         return predict_loss + self.reg_param * reg_loss
+class DLinkPredictorOnlyRel(nn.Module):
+    def __init__(self, out_dim, etypes, ntype2id,reg_param=0,use_cuda=False,edg_pct=0.8,ng_rate=5,filtered=False):
+        super(DLinkPredictorOnlyRel, self).__init__()
+        self.reg_param = reg_param
+        self.etypes=etypes
+        self.w_relation=nn.ModuleDict()
+        self.ng_rate=ng_rate
+        self.filtered = filtered
+        self.ntype2id=ntype2id
+        self.edg_pct=edg_pct
+        self.use_cuda=use_cuda
+        self.out_dim=out_dim
+
+        self.w_relation = nn.ParameterDict()
+        w_relation={}
+        for ename in self.etypes:
+            w_relation[ename] = nn.Parameter(torch.Tensor(out_dim,1))
+            nn.init.xavier_uniform_(w_relation[ename],
+                                gain=nn.init.calculate_gain('relu'))
+        self.w_relation.update(w_relation)
+
+    def calc_pos_score_with_rids(self, h_emb, t_emb, rids,etypes2ids,device=None):
+        # DistMult
+        w_relation_mat = torch.zeros((len(self.w_relation), self.out_dim)).to(device)
+        for etype in etypes2ids.keys():
+            w_relation_mat[etypes2ids[etype], :] = self.w_relation[etype].squeeze()
+        r = w_relation_mat[rids]
+        score = torch.sum(h_emb * r * t_emb, dim=-1)
+        return score
+
+    def calc_neg_tail_score(self, heads, tails, rids, num_chunks, chunk_size, neg_sample_size,etypes2ids, device=None):
+        hidden_dim = heads.shape[1]
+        w_relation_mat = torch.zeros((len(self.w_relation), self.out_dim)).to(device)
+        for etype in etypes2ids.keys():
+            w_relation_mat[etypes2ids[etype], :] = self.w_relation[etype].squeeze()
+        r = w_relation_mat[rids]
+
+        if device is not None:
+            r = r.to(device)
+            heads = heads.to(device)
+            tails = tails.to(device)
+        tails = tails.reshape(num_chunks, neg_sample_size, hidden_dim)
+        tails = torch.transpose(tails, 1, 2)
+        tmp = (heads * r).reshape(num_chunks, chunk_size, hidden_dim)
+        return torch.bmm(tmp, tails)
+
+    def calc_neg_head_score(self, heads, tails, rids, num_chunks, chunk_size, neg_sample_size,etypes2ids, device=None):
+        hidden_dim = tails.shape[1]
+        w_relation_mat = torch.zeros((len(self.w_relation), self.out_dim)).to(device)
+        for etype in etypes2ids.keys():
+            w_relation_mat[etypes2ids[etype], :] = self.w_relation[etype].squeeze()
+        r = w_relation_mat[rids]
+        if device is not None:
+            r = r.to(device)
+            heads = heads.to(device)
+            tails = tails.to(device)
+        heads = heads.reshape(num_chunks, neg_sample_size, hidden_dim)
+        heads = torch.transpose(heads, 1, 2)
+        tmp = (tails * r).reshape(num_chunks, chunk_size, hidden_dim)
+        return torch.bmm(tmp, heads)
+
+    def calc_score(self, g,embedding, dict_s_d):
+        # DistMult
+        score={}
+
+        for etype in self.etypes:
+            (stype,e,dtype)=g.to_canonical_etype(etype)
+            s = embedding[self.ntype2id[stype]][dict_s_d[etype][:, 0]]
+            r = self.w_relation[etype].squeeze()
+            o = embedding[self.ntype2id[dtype]][dict_s_d[etype][:, 1]]
+            score[etype] = torch.sum(s * r * o, dim=1)
+        return score
+
+    def calc_score_mb(self, g,embedding, dict_s_d):
+        # DistMult
+        score = {}
+        # TODO maybe represent triplets as three arrays to make it faster.
+        for etype in dict_s_d.keys():
+            (stype, e, dtype)=g.to_canonical_etype(etype)
+            s = embedding[stype][dict_s_d[etype][0]]
+            r = self.w_relation[etype].squeeze()
+            # TODO consider other formulations metapath2vec
+            o = embedding[dtype][dict_s_d[etype][1]]
+            score[etype] = torch.sum(s * r * o, dim=1)
+        return score
+
+    def regularization_loss(self, embedding):
+            loss=0
+            for e in embedding:
+                loss+=torch.mean(e.pow(2))
+
+            for e in self.w_relation.keys():
+                loss+=torch.mean(self.w_relation[e].pow(2))
+            return loss
+
+    def forward(self, g,embed, edict_s_d, e_dict_labels):
+        # triplets is a list of data samples (positive and negative)
+        # each row in the triplets is a 3-tuple of (source, relation, destination)
+        score = self.calc_score(g,embed, edict_s_d)
+        predict_loss=0
+        for etype in self.etypes:
+            predict_loss += F.binary_cross_entropy_with_logits(score[etype], e_dict_labels[etype])
+
+        # TODO implement regularization
+
+        reg_loss = self.regularization_loss(embed)
+
+        return predict_loss + self.reg_param * reg_loss
+
+    def generate_samples(self,g):
+        # TODO move to dataloader so that it is faster
+        edg_pct=self.edg_pct
+        ng_rate=self.ng_rate
+        filtered=self.filtered
+        e_dict_labels={}
+        edict_s_d={}
+        for etype in g.etypes:
+            u, v = g.all_edges(etype=etype)
+            (srctype, ety, desttype) = g.to_canonical_etype(etype)
+            # keep only pairs of nodes between dstnodes
+            src_len = g.dstnodes[srctype].data['_ID'].shape[0]
+            dest_len = g.dstnodes[desttype].data['_ID'].shape[0]
+            src_nodes_in_dest = u < src_len
+            if src_len==0 or dest_len==0 or torch.sum(src_nodes_in_dest)==0:
+                continue
+            else:
+                pos_head = u[src_nodes_in_dest]
+                pos_tail = v[src_nodes_in_dest]
+                # filter for edg_pct
+                pos_head = pos_head[:int(edg_pct * pos_head.shape[0])]
+                pos_tail = pos_tail[:int(edg_pct * pos_tail.shape[0])]
+                size_of_batch = pos_head.shape[0]
+                labels = torch.zeros(size_of_batch * (ng_rate + 1)).float()
+                if self.use_cuda:
+                    labels=labels.cuda()
+                labels[: size_of_batch] = 1
+                head = pos_head.repeat((ng_rate + 1))
+                tail = pos_tail.repeat((ng_rate + 1))
+                head[size_of_batch:] = torch.randint(src_len, (size_of_batch * ng_rate,))
+                if filtered:
+                    pos_pair = set(tuple(map(tuple, torch.cat((pos_head.unsqueeze(0), pos_tail.unsqueeze(0)), dim=0).transpose(1,0).cpu().numpy())))
+                    neg_pair = set(tuple(map(tuple,torch.cat((head[size_of_batch:].unsqueeze(0),
+                                          tail[size_of_batch:].unsqueeze(0)), dim=0).transpose(1,0).cpu().numpy())))
+                    filt_neg_pair=neg_pair.difference(pos_pair)
+                e_dict_labels[etype]=labels
+                edict_s_d[etype]=(head,tail)
+        return e_dict_labels,edict_s_d
+    def regularization_loss_mb(self, embedding):
+            loss = 0
+            for ntype in embedding.keys():
+                loss += torch.mean(embedding[ntype].pow(2))
+
+            for e in self.w_relation.keys():
+                loss += torch.mean(self.w_relation[e].pow(2))
+            return loss
+    def forward_mb(self, g,embed):
+        # triplets is a list of data samples (positive and negative)
+        # each row in the triplets is a 3-tuple of (source, relation, destination)
+
+        e_dict_labels,edict_s_d=self.generate_samples(g=g)
+        score = self.calc_score_mb(g,embed, edict_s_d)
+        predict_loss=0
+        for etype in e_dict_labels.keys():
+            if len(score[etype])>0:
+                predict_loss += F.binary_cross_entropy_with_logits(score[etype], e_dict_labels[etype])
+
+        # TODO implement regularization
+
+        reg_loss = self.regularization_loss_mb(embed)
+
+        return predict_loss + self.reg_param * reg_loss
+
 
 
 class DLinkPredictorMB(nn.Module):
@@ -272,6 +452,57 @@ class DLinkPredictorMB(nn.Module):
                                                                 self.regularization_coef * reg_loss.detach()))
         return predict_loss + self.regularization_coef * reg_loss
 
+class End2EndLinkPredictorRGCN(nn.Module):
+    def __init__(self, h_dim, out_dim, num_rels,rel_names, num_bases,g,device,
+                 num_hidden_layers=1, dropout=0,
+                 use_self_loop=False, use_cuda=False,h_dim_player=None):
+        super(End2EndLinkPredictorRGCN, self).__init__()
+        self.h_dim = h_dim
+        self.out_dim = out_dim
+        self.num_rels = num_rels
+        self.num_bases = None if num_bases < 0 else num_bases
+        self.num_hidden_layers = num_hidden_layers
+        self.dropout = dropout
+        self.rel_names = rel_names
+        self.rel_names.sort()
+        self.use_self_loop = use_self_loop
+        self.use_cuda = use_cuda
+        self.h_dim_player=h_dim_player
+        self.link_predictor=None
+
+        self.embed_layer = MiniBatchRelGraphEmbed(g=g,device=device,embed_size=h_dim)
+        self.layers = nn.ModuleList()
+        # h2h
+        if h_dim_player is None:
+            for i in range(self.num_hidden_layers):
+                self.layers.append(RelGraphConvHetero(
+                    self.h_dim, self.h_dim, self.rel_names, "basis",
+                    self.num_bases, activation=F.relu, self_loop=self.use_self_loop,
+                    dropout=self.dropout))
+        else:
+            for i in range(self.num_hidden_layers):
+                self.layers.append(RelGraphConvHetero(
+                    self.h_dim_player[i], self.h_dim_player[i+1], self.rel_names, "basis",
+                    self.num_bases, activation=F.relu, self_loop=self.use_self_loop,
+                    dropout=self.dropout))
+        # h2o
+        self.layers.append(RelGraphConvHetero(
+            self.h_dim, self.out_dim, self.rel_names, "basis",
+            self.num_bases, activation=None,
+            self_loop=self.use_self_loop))
+
+    def forward(self,g):
+
+        h_d = self.embed_layer(g,full=True)
+        for layer in self.layers:
+            h = layer(g, h_d)
+        return h
+    def forward_mb(self,blocks):
+
+        h = self.embed_layer(blocks[0])
+        for layer, block in zip(self.layers, blocks):
+            h = layer.forward_mb(block, h)
+        return h
 
 class End2EndClassifierRGCN(nn.Module):
     def __init__(self, h_dim, out_dim, num_rels,rel_names, num_bases,g,device,

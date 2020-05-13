@@ -186,7 +186,6 @@ def negative_sampling(pos_samples, num_entity, negative_rate):
     obj = choices <= 0.5
     neg_samples[subj, 0] = values[subj]
     neg_samples[obj, 2] = values[obj]
-
     return np.concatenate((pos_samples, neg_samples)), labels
 
 #######################################################################
@@ -194,6 +193,62 @@ def negative_sampling(pos_samples, num_entity, negative_rate):
 # Utility function for evaluations
 #
 #######################################################################
+def svd_entropy(x, order=3, normalize=False):
+    """Singular Value Decomposition entropy.
+
+    Parameters
+    ----------
+    x : list or np.array
+        One-dimensional time series of shape (n_times)
+    order : int
+        Order of SVD entropy (= length of the embedding dimension).
+        Default is 3.
+    delay : int
+        Time delay (lag). Default is 1.
+    normalize : bool
+        If True, divide by log2(order!) to normalize the entropy between 0
+        and 1. Otherwise, return the permutation entropy in bit.
+
+    Returns
+    -------
+    svd_e : float
+        SVD Entropy
+
+    Notes
+    -----
+    SVD entropy is an indicator of the number of eigenvectors that are needed
+    for an adequate explanation of the data set. In other words, it measures
+    the dimensionality of the data.
+
+    The SVD entropy of a signal :math:`x` is defined as:
+
+    .. math::
+        H = -\\sum_{i=1}^{M} \\overline{\\sigma}_i log_2(\\overline{\\sigma}_i)
+
+    where :math:`M` is the number of singular values of the embedded matrix
+    :math:`Y` and :math:`\\sigma_1, \\sigma_2, ..., \\sigma_M` are the
+    normalized singular values of :math:`Y`.
+
+    The embedded matrix :math:`Y` is created by:
+
+    .. math:: y(i)=[x_i,x_{i+delay}, ...,x_{i+(order-1) * delay}]
+
+    .. math:: Y=[y(1),y(2),...,y(N-(order-1))*delay)]^T
+    """
+
+    mat=x
+    W = np.linalg.svd(mat, compute_uv=False)
+    # Normalize the singular values
+    W /= sum(W)
+    svd_e = -np.multiply(W, np.log2(W)).sum()
+    if normalize:
+        svd_e /= np.log2(order)
+    return svd_e
+def calculate_entropy(embed):
+    svd_ent=0
+    for key in embed.keys():
+        svd_ent+=svd_entropy(embed[key].cpu().numpy(),normalize=True)
+    return svd_ent/len(embed)
 
 def sort_and_rank(score, target):
     _, indices = torch.sort(score, dim=1, descending=True)
@@ -240,6 +295,79 @@ def perturb_and_get_rank(g,embedding, w, a, etype, b, test_size, batch_size=100)
 
 # TODO (lingfan): implement filtered metrics
 # return MRR (raw), and Hits @ (1, 3, 10)
+def calc_mrr_pr(g, embedding, w, test_triplets_d, hits=[], eval_bz=10):
+    def perturb_and_get_rank(g, embedding, w, a, etype, b, test_size, batch_size=100,change=False):
+        """ Perturb one element in the triplets
+        """
+        n_batch = (test_size + batch_size - 1) // batch_size
+        ranks = []
+        ntype2id_dic = {}
+        we = w[etype]
+        (s, e, o) = g.to_canonical_etype(etype)
+        if change:
+            h=o
+            o=s
+            s=h
+        for idx in range(n_batch):
+            print("batch {} / {}".format(idx, n_batch))
+            batch_start = idx * batch_size
+            batch_end = min(test_size, (idx + 1) * batch_size)
+            batch_a = a[batch_start: batch_end]
+            wbatch = torch.transpose(we.repeat(1, batch_end - batch_start), 0, 1)
+            emb_ar = embedding[s][batch_a] * wbatch  # S*W_e
+            emb_ar = emb_ar.transpose(0, 1).unsqueeze(2)  # size: D x E x 1
+            emb_c = embedding[o].transpose(0, 1).unsqueeze(1)  #
+            # out-prod and reduce sum
+            # Positive edges against true
+            # Negative edges: Corrupt the positive
+            # edge by corrupting the head or tail node
+            # Filtered version remove edges that exist.
+
+            out_prod = torch.bmm(emb_ar, emb_c)  # size D x E x V
+
+            score = torch.sum(out_prod, dim=0)  # size E x V
+            score = torch.sigmoid(score)
+            # TODO filter positive edges
+            #  remove the rows that correspond to positive edges
+
+            target = b[batch_start: batch_end]
+            ranks.append(sort_and_rank(score, target))
+
+        return torch.cat(ranks)
+
+    ##
+    # Keep w as dictionary let extract r as key
+    #
+    with torch.no_grad():
+        ranks_s = []
+        ranks_o = []
+        for etype in test_triplets_d.keys():
+            v = test_triplets_d[etype].T
+            nv = np.array(v)
+            test_size = len(v)
+            s = torch.tensor(nv[:, 0])
+            o = torch.tensor(nv[:, 1])
+            # perturb subject
+            ranks_s.append(perturb_and_get_rank(g, embedding, w, o, etype[1], s, test_size, eval_bz,change=True))
+            # perturb object
+            ranks_o.append(perturb_and_get_rank(g, embedding, w, s, etype[1], o, test_size, eval_bz,change=False))
+
+        ranks_s = torch.cat(ranks_s)
+        ranks_o = torch.cat(ranks_o)
+        ranks = torch.cat([ranks_s, ranks_o])
+        # Careful of rank
+        ranks += 1  # change to 1-indexed
+
+        mrr = torch.mean(1.0 / ranks.float())
+        print("MRR (raw): {:.6f}".format(mrr.item()))
+        res=" MRR (raw): {:.6f}".format(mrr.item())
+        for hit in hits:
+            avg_count = torch.mean((ranks <= hit).float())
+            res+=" Hits (raw) @ {}: {:.6f}".format(hit, avg_count.item())
+            print("Hits (raw) @ {}: {:.6f}".format(hit, avg_count.item()))
+    return res
+
+
 def calc_mrr(g,embedding, w, test_triplets_d, hits=[], eval_bz=100):
         ##
         # Keep w as dictionary let extract r as key
