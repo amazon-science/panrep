@@ -2965,7 +2965,7 @@ def finetunedblpsmallrw():
         confs = [18,9, 10, 13,3, 2]
         sets[6] = set([0.001])
         sets[2] = set([2])
-        sets[3] = set([150])
+        #sets[3] = set([150])
         key[6]=0.001
         experiment = [n_layers]
         i = 0
@@ -3134,11 +3134,12 @@ def finetunedblplargerw():
         plot_over = 0
         key = list(key)
 
-        confs = [18,9, 10, 13,3, 2]
+        confs = [18,9, 10, 13,3, 6]
         #sets[6] = set([0.001])
         sets[2] = set([2])
+        key[2]=2
         #sets[3] = set([150])
-        key[6]=0.001
+        #key[6]=0.001
         experiment = [n_layers]
         i = 0
         for conf6 in sets[confs[5]]:
@@ -3275,6 +3276,7 @@ def finetunedblplargerw():
     paramlist = "n_epochs,n_ft_ep, n_layers, n_h, n_b, fanout, lr, dropout, use_link_prediction, R, I, mask_links," \
                 " use_self_loop, M,num_cluster,single_layer, n_mt_cls,k_shot, rw  "
     paramlist = paramlist.split(',')
+
     file = "dblp_preprocessed-2020-05-02-23:04:46.626591.pickle"
 
     results = pickle.load(open("results/finetune_node_classification/" + file, 'rb'))
@@ -9493,6 +9495,435 @@ def finetuneimdb_dif_supervisions():
         results = pickle.load(open("results/universal_task/" + f, 'rb'))
         plot_results(results, paramlist)
 
+def finetuneimdb_inductive_lp_supervisions():
+
+    def split_acc(acc):
+        panrep_acc = float(acc.split(" ")[4].split("~")[0])
+        prft_tes_acc = float(acc.split(" ")[24])
+        finpanrep_acc = float(acc.split(" ")[30].split("~")[0])
+
+        mrr = float(acc.split(" ")[51].split('\n')[0])
+
+        if acc.split(" ")[56]=='LPFT':
+            lp_mrr = 0
+            lpft_mrr = float(acc.split(" ")[58].split('\n')[0])
+            entropy =float(acc.split(" ")[83])
+            mlp_acc_pr=float(acc.split(" ")[88])
+            mlp_acc_prft=float(acc.split(" ")[93])
+            finlogpanrep_acc = float(acc.split(" ")[65].split("~")[0])
+        else:
+            lp_mrr = float(acc.split(" ")[58].split('\n')[0])
+            lpft_mrr = float(acc.split(" ")[65].split('\n')[0])
+            entropy =float(acc.split(" ")[90])
+            mlp_acc_pr=float(acc.split(" ")[95])
+            mlp_acc_prft=float(acc.split(" ")[100])
+            finlogpanrep_acc = float(acc.split(" ")[72].split("~")[0])
+        return panrep_acc,prft_tes_acc,finpanrep_acc,mrr,lp_mrr,lpft_mrr,entropy,mlp_acc_pr,mlp_acc_prft,finlogpanrep_acc
+    def plot_results(results, paramlist):
+        plots = {}
+        elems = list(results.keys())[0]
+        sets = []
+        for el in list(elems):
+            sets += [set()]
+        keys = list(results.keys())
+        experiment = keys[-1]
+        keys = keys[:-1]
+        for key in keys:
+            (n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
+             use_link_prediction, use_reconstruction_loss,
+             use_infomax_loss, mask_links, use_self_loop,
+             use_node_motif,num_cluster,single_layer,motif_cluster,k_fold,rw, ng_rate,only_ssl,test_edge_split) = key
+            for i in range(len(list(key))):
+                sets[i].add(key[i])
+            if len(results[key])>0:
+                plots[key] = split_acc(results[key])
+
+        plot_over = 21
+        key = list(key)
+
+        confs = [8,9,10, 13, 18, 4]
+        sets[0] = set([800])
+        # key[6]=0.001
+        experiment = [n_layers]
+        i = 0
+        for conf6 in sets[confs[5]]:
+            for conf5 in sets[confs[4]]:
+                experiment = paramlist[confs[5]] + ' : ' + str(conf6) + \
+                             paramlist[confs[4]] + ' : ' + str(conf5)
+                key[confs[4]] = conf5
+                key[confs[5]] = conf6
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+
+                # fig.set_prop_cycle('color', plt.cm.Spectral(np.linspace(0, 1, 30)))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][0]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Macro-F1')
+                # plt.ylim(bottom=0.4)
+                plt.title("PR " + experiment)
+                plt.show()
+                legend = []
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+
+                # fig.set_prop_cycle('color', plt.cm.Spectral(np.linspace(0, 1, 30)))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][9]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Macro-F1')
+                # plt.ylim(bottom=0.4)
+                plt.title("PR-FT Log" + experiment)
+                plt.show()
+
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+
+                # fig.set_prop_cycle('color', plt.cm.Spectral(np.linspace(0, 1, 30)))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][2]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Macro-F1')
+                # plt.ylim(bottom=0.4)
+                plt.title("PR-FT " + experiment)
+                plt.show()
+                legend = []
+
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+
+                # fig.set_prop_cycle('color', plt.cm.Spectral(np.linspace(0, 1, 30)))
+
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][1]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Test Acc')
+
+                plt.title("MLP " + experiment)
+                plt.show()
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+                # fig.set_prop_cycle('color', plt.cm.Spectral(np.linspace(0, 1, 30)))
+
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][3]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('MRR')
+
+                plt.title("PanRep " + experiment)
+                plt.show()
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][4]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('MRR')
+
+                plt.title("PanRep-LP module" + experiment)
+                plt.show()
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][5]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('MRR')
+
+                plt.title("PanRep LP-FT " + experiment)
+                plt.show()
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][7]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Acc')
+
+                plt.title("MLP acc of pr " + experiment)
+                plt.show()
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][8]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Acc')
+
+                plt.title("MLP acc of pr-ft" + experiment)
+                plt.show()
+
+    paramlist = "n_epochs,n_ft_ep, L, n_h, n_b, fanout, lr, dr, LP, R, I, mask_links," \
+                " self_loop , M,num_cluster,single_layer, n_mt_cls,k_shot, rw, ng_rate, ssl,split_pct "
+    paramlist = paramlist.split(',')
+
+    files=["imdb_preprocessed-2020-05-19-19:37:07.901740.pickle"]
+    for f in files:
+    #file = "imdb_preprocessed-2020-05-07-09:30:14.936903.pickle"
+
+        results = pickle.load(open("results/universal_task/" + f, 'rb'))
+        plot_results(results, paramlist)
+
+
 def finetunedblp_univ():
     def split_acc(acc):
         panrep_acc = float(acc.split(" ")[4].split("~")[0])
@@ -9710,12 +10141,1286 @@ def finetunedblp_univ():
 
     results = pickle.load(open("results/universal_task/" + file, 'rb'))
     plot_results(results, paramlist)
+def finetunedblp_all_signals():
+
+    def split_acc(acc):
+        panrep_acc = float(acc.split(" ")[4].split("~")[0])
+        prft_tes_acc = float(acc.split(" ")[24])
+        finpanrep_acc = float(acc.split(" ")[30].split("~")[0])
+
+        mrr = float(acc.split(" ")[51].split('\n')[0])
+
+        if acc.split(" ")[56]=='LPFT':
+            lp_mrr = 0
+            lpft_mrr = float(acc.split(" ")[58].split('\n')[0])
+            entropy =float(acc.split(" ")[83])
+            mlp_acc_pr=float(acc.split(" ")[88])
+            mlp_acc_prft=float(acc.split(" ")[93])
+            finlogpanrep_acc = float(acc.split(" ")[65].split("~")[0])
+        else:
+            lp_mrr = float(acc.split(" ")[58].split('\n')[0])
+            lpft_mrr = float(acc.split(" ")[65].split('\n')[0])
+            entropy =float(acc.split(" ")[90])
+            mlp_acc_pr=float(acc.split(" ")[95])
+            mlp_acc_prft=float(acc.split(" ")[100])
+            finlogpanrep_acc = float(acc.split(" ")[72].split("~")[0])
+        return panrep_acc,prft_tes_acc,finpanrep_acc,mrr,lp_mrr,lpft_mrr,entropy,mlp_acc_pr,mlp_acc_prft,finlogpanrep_acc
+    def plot_results(results, paramlist):
+        plots = {}
+        elems = list(results.keys())[0]
+        sets = []
+        for el in list(elems):
+            sets += [set()]
+        keys = list(results.keys())
+        experiment = keys[-1]
+        keys = keys[:-1]
+        for key in keys:
+            (n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
+             use_link_prediction, use_reconstruction_loss,
+             use_infomax_loss, mask_links, use_self_loop,
+             use_node_motif,num_cluster,single_layer,motif_cluster,k_fold,rw, ng_rate,only_ssl,test_edge_split) = key
+            for i in range(len(list(key))):
+                sets[i].add(key[i])
+            if len(results[key])>0:
+                plots[key] = split_acc(results[key])
+
+        plot_over = 0
+        key = list(key)
+
+        confs = [1,2,10, 13, 3, 4]
+        # key[6]=0.001
+        exp = paramlist[8] + ":" + str(sets[8]) \
+                     + paramlist[9] + ":" \
+                     + str(sets[9]) + paramlist[10] + ":" + str(sets[10]) + paramlist[13] + ":" + str(sets[13])
+        i = 0
+        for conf6 in sets[confs[5]]:
+            for conf5 in sets[confs[4]]:
+                experiment = exp+ paramlist[confs[5]] + ' : ' + str(conf6) + \
+                             paramlist[confs[4]] + ' : ' + str(conf5)
+                key[confs[4]] = conf5
+                key[confs[5]] = conf6
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+
+                # fig.set_prop_cycle('color', plt.cm.Spectral(np.linspace(0, 1, 30)))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][0]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Macro-F1')
+                # plt.ylim(bottom=0.4)
+                plt.title("PR " + experiment)
+                plt.show()
+                legend = []
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+
+                # fig.set_prop_cycle('color', plt.cm.Spectral(np.linspace(0, 1, 30)))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][9]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Macro-F1')
+                # plt.ylim(bottom=0.4)
+                plt.title("PR-FT Log" + experiment)
+                plt.show()
+
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+
+                # fig.set_prop_cycle('color', plt.cm.Spectral(np.linspace(0, 1, 30)))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][2]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Macro-F1')
+                # plt.ylim(bottom=0.4)
+                plt.title("PR-FT " + experiment)
+                plt.show()
+                legend = []
+
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+
+                # fig.set_prop_cycle('color', plt.cm.Spectral(np.linspace(0, 1, 30)))
+
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][1]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Test Acc')
+
+                plt.title("MLP " + experiment)
+                plt.show()
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+                # fig.set_prop_cycle('color', plt.cm.Spectral(np.linspace(0, 1, 30)))
+
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][3]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('MRR')
+
+                plt.title("PanRep " + experiment)
+                plt.show()
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][4]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('MRR')
+
+                plt.title("PanRep-LP module" + experiment)
+                plt.show()
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][5]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('MRR')
+
+                plt.title("PanRep LP-FT " + experiment)
+                plt.show()
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][7]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Acc')
+
+                plt.title("MLP acc of pr " + experiment)
+                plt.show()
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][8]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Acc')
+
+                plt.title("MLP acc of pr-ft" + experiment)
+                plt.show()
+
+    paramlist = "n_epochs,n_ft_ep, L, n_h, n_b, fanout, lr, dr, LP, R, I, mask_links," \
+                " self_loop , M,num_cluster,single_layer, n_mt_cls,k_shot, rw, ng_rate, ssl,split_pct "
+    paramlist = paramlist.split(',')
+
+    files=["dblp_preprocessed-2020-05-20-04:49:39.197432.pickle","dblp_preprocessed-2020-05-20-05:04:55.654569.pickle"
+,"dblp_preprocessed-2020-05-20-05:34:41.482351.pickle","dblp_preprocessed-2020-05-20-05:35:21.871692.pickle"]
+    for f in files:
+    #file = "imdb_preprocessed-2020-05-07-09:30:14.936903.pickle"
+
+        results = pickle.load(open("results/universal_task/" + f, 'rb'))
+        plot_results(results, paramlist)
+
+
+def finetunedblp_small():
+
+    def split_acc(acc):
+        panrep_acc = float(acc.split(" ")[4].split("~")[0])
+        prft_tes_acc = float(acc.split(" ")[24])
+        finpanrep_acc = float(acc.split(" ")[30].split("~")[0])
+
+        mrr = 0
+
+        lp_mrr = 0
+        lpft_mrr = 0
+        entropy =0
+        mlp_acc_pr=0
+        mlp_acc_prft=0
+        finlogpanrep_acc = 0
+        return panrep_acc,prft_tes_acc,finpanrep_acc,mrr,lp_mrr,lpft_mrr,entropy,mlp_acc_pr,mlp_acc_prft,finlogpanrep_acc
+    def plot_results(results, paramlist):
+        plots = {}
+        elems = list(results.keys())[0]
+        sets = []
+        for el in list(elems):
+            sets += [set()]
+        keys = list(results.keys())
+        experiment = keys[-1]
+        keys = keys[:-1]
+        for key in keys:
+            (n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
+             use_link_prediction, use_reconstruction_loss,
+             use_infomax_loss, mask_links, use_self_loop,
+             use_node_motif,num_cluster,single_layer,motif_cluster,k_fold,rw, ng_rate,only_ssl,test_edge_split) = key
+            for i in range(len(list(key))):
+                sets[i].add(key[i])
+            if len(results[key])>0:
+                plots[key] = split_acc(results[key])
+
+        plot_over = 0
+        key = list(key)
+
+        confs = [1,3,4, 13, 5, 2]
+        # key[6]=0.001
+        exp = paramlist[8] + ":" + str(sets[8]) \
+                     + paramlist[9] + ":" \
+                     + str(sets[9]) + paramlist[10] + ":" + str(sets[10]) + paramlist[13] + ":" + str(sets[13])
+        i = 0
+        for conf6 in sets[confs[5]]:
+            for conf5 in sets[confs[4]]:
+                experiment = exp+ paramlist[confs[5]] + ' : ' + str(conf6) + \
+                             paramlist[confs[4]] + ' : ' + str(conf5)
+                key[confs[4]] = conf5
+                key[confs[5]] = conf6
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+
+                # fig.set_prop_cycle('color', plt.cm.Spectral(np.linspace(0, 1, 30)))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][0]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Macro-F1')
+                # plt.ylim(bottom=0.4)
+                plt.title("PR " + experiment)
+                plt.show()
+                legend = []
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+
+                # fig.set_prop_cycle('color', plt.cm.Spectral(np.linspace(0, 1, 30)))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][9]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Macro-F1')
+                # plt.ylim(bottom=0.4)
+                plt.title("PR-FT Log" + experiment)
+                plt.show()
+
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+
+                # fig.set_prop_cycle('color', plt.cm.Spectral(np.linspace(0, 1, 30)))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][2]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Macro-F1')
+                # plt.ylim(bottom=0.4)
+                plt.title("PR-FT " + experiment)
+                plt.show()
+                legend = []
+
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+
+                # fig.set_prop_cycle('color', plt.cm.Spectral(np.linspace(0, 1, 30)))
+
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][1]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Test Acc')
+
+                plt.title("MLP " + experiment)
+                plt.show()
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+                # fig.set_prop_cycle('color', plt.cm.Spectral(np.linspace(0, 1, 30)))
+
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][3]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('MRR')
+
+                plt.title("PanRep " + experiment)
+                plt.show()
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][4]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('MRR')
+
+                plt.title("PanRep-LP module" + experiment)
+                plt.show()
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][5]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('MRR')
+
+                plt.title("PanRep LP-FT " + experiment)
+                plt.show()
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][7]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Acc')
+
+                plt.title("MLP acc of pr " + experiment)
+                plt.show()
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][8]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Acc')
+
+                plt.title("MLP acc of pr-ft" + experiment)
+                plt.show()
+
+    paramlist = "n_epochs,n_ft_ep, L, n_h, n_b, fanout, lr, dr, LP, R, I, mask_links," \
+                " self_loop , M,num_cluster,single_layer, n_mt_cls,k_shot, rw, ng_rate, ssl,split_pct "
+    paramlist = paramlist.split(',')
+
+    files=["dblp_preprocessed-2020-05-21-23:45:43.670317.pickle"]
+    for f in files:
+    #file = "imdb_preprocessed-2020-05-07-09:30:14.936903.pickle"
+
+        results = pickle.load(open("results/universal_task/" + f, 'rb'))
+        plot_results(results, paramlist)
+
+def finetunedblp_med():
+
+    def split_acc(acc):
+        panrep_acc = float(acc.split(" ")[4].split("~")[0])
+        prft_tes_acc = float(acc.split(" ")[24])
+        finpanrep_acc = float(acc.split(" ")[30].split("~")[0])
+
+        mrr = 0
+
+        lp_mrr = 0
+        lpft_mrr = 0
+        entropy =0
+        mlp_acc_pr=0
+        mlp_acc_prft=0
+        finlogpanrep_acc = 0
+        return panrep_acc,prft_tes_acc,finpanrep_acc,mrr,lp_mrr,lpft_mrr,entropy,mlp_acc_pr,mlp_acc_prft,finlogpanrep_acc
+    def plot_results(results, paramlist):
+        plots = {}
+        elems = list(results.keys())[0]
+        sets = []
+        for el in list(elems):
+            sets += [set()]
+        keys = list(results.keys())
+        experiment = keys[-1]
+        keys = keys[:-1]
+        for key in keys:
+            (n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
+             use_link_prediction, use_reconstruction_loss,
+             use_infomax_loss, mask_links, use_self_loop,
+             use_node_motif,num_cluster,single_layer,motif_cluster,k_fold,rw, ng_rate,only_ssl,test_edge_split) = key
+            for i in range(len(list(key))):
+                sets[i].add(key[i])
+            if len(results[key])>0:
+                plots[key] = split_acc(results[key])
+
+        plot_over = 0
+        key = list(key)
+
+        confs = [1,2,3, 13, 5, 4]
+        # key[6]=0.001
+        exp = paramlist[8] + ":" + str(sets[8]) \
+                     + paramlist[9] + ":" \
+                     + str(sets[9]) + paramlist[10] + ":" + str(sets[10]) + paramlist[13] + ":" + str(sets[13])
+        i = 0
+        for conf6 in sets[confs[5]]:
+            for conf5 in sets[confs[4]]:
+                experiment = exp+ paramlist[confs[5]] + ' : ' + str(conf6) + \
+                             paramlist[confs[4]] + ' : ' + str(conf5)
+                key[confs[4]] = conf5
+                key[confs[5]] = conf6
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+
+                # fig.set_prop_cycle('color', plt.cm.Spectral(np.linspace(0, 1, 30)))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][0]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Macro-F1')
+                # plt.ylim(bottom=0.4)
+                plt.title("PR " + experiment)
+                plt.show()
+                legend = []
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+
+                # fig.set_prop_cycle('color', plt.cm.Spectral(np.linspace(0, 1, 30)))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][9]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Macro-F1')
+                # plt.ylim(bottom=0.4)
+                plt.title("PR-FT Log" + experiment)
+                plt.show()
+
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+
+                # fig.set_prop_cycle('color', plt.cm.Spectral(np.linspace(0, 1, 30)))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][2]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Macro-F1')
+                # plt.ylim(bottom=0.4)
+                plt.title("PR-FT " + experiment)
+                plt.show()
+                legend = []
+
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+
+                # fig.set_prop_cycle('color', plt.cm.Spectral(np.linspace(0, 1, 30)))
+
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][1]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Test Acc')
+
+                plt.title("MLP " + experiment)
+                plt.show()
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+                # fig.set_prop_cycle('color', plt.cm.Spectral(np.linspace(0, 1, 30)))
+
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][3]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('MRR')
+
+                plt.title("PanRep " + experiment)
+                plt.show()
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][4]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('MRR')
+
+                plt.title("PanRep-LP module" + experiment)
+                plt.show()
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][5]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('MRR')
+
+                plt.title("PanRep LP-FT " + experiment)
+                plt.show()
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][7]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Acc')
+
+                plt.title("MLP acc of pr " + experiment)
+                plt.show()
+                legend = []
+                i += 1
+                fig = plt.figure(num=i, figsize=(8, 6))
+                plt.rc('axes', prop_cycle=(cycler('color', list('kcbgyrgbrgykcmygbcg')) +
+                                           cycler('linestyle',
+                                                  ['--', ':', '-.', '-', ':', '-', '--', '-', ':', ':', '-.', '-', '--',
+                                                   ':', '-.', '-', '--', ':', '-.'])))
+                for conf in sets[confs[0]]:
+                    for conf2 in sets[confs[1]]:
+                        for conf3 in sets[confs[2]]:
+                            for conf4 in sets[confs[3]]:
+                                skip_this = False
+                                cur_legend = paramlist[confs[2]] + ' : ' + str(float(conf3)) + paramlist[
+                                    confs[0]] + ' : ' + str(
+                                    int(conf)) + paramlist[confs[1]] + ' : ' + str(float(conf2)) + paramlist[confs[3]] + \
+                                             ' : ' + str(float(conf4))
+                                y = []
+                                key[confs[0]] = conf
+                                key[confs[1]] = conf2
+                                key[confs[2]] = conf3
+                                key[confs[3]] = conf4
+                                x = sorted(sets[plot_over])
+                                for el in x:
+                                    key[plot_over] = el
+                                    if tuple(key) not in plots:
+                                        skip_this = True
+                                        break
+                                    y += [plots[tuple(key)][8]]
+                                if skip_this:
+                                    break
+                                plt.plot(x, y)
+                                legend += [cur_legend]
+                plt.legend(legend, loc='center left', bbox_to_anchor=(-0.1, 1.2), ncol=3, prop=fontP)
+                plt.xlabel(paramlist[plot_over])
+                plt.ylabel('Acc')
+
+                plt.title("MLP acc of pr-ft" + experiment)
+                plt.show()
+
+    paramlist = "n_epochs,n_ft_ep, L, n_h, n_b, fanout, lr, dr, LP, R, I, mask_links," \
+                " self_loop , M,num_cluster,single_layer, n_mt_cls,k_shot, rw, ng_rate, ssl,split_pct "
+    paramlist = paramlist.split(',')
+
+    files=["dblp_preprocessed-2020-05-21-21:09:26.581525.pickle"]
+    for f in files:
+    #file = "imdb_preprocessed-2020-05-07-09:30:14.936903.pickle"
+
+        results = pickle.load(open("results/universal_task/" + f, 'rb'))
+        plot_results(results, paramlist)
 
 if __name__ == '__main__':
     #finetunedblpsmallrw()
-    #finetunedblplargerw()
+    finetuneimdb_dif_edge_splits()
     #finetuneimdb_univ()#_morefintepochs_univ()
-    #finetunedblp_univ()
     #finetuneimdb_adjusted_large_scale_learning_rate_to_base_layers()
     #finetuneimdb_dif_edge_splits_dif_lr()
-    finetuneimdb_dif_supervisions()
+    #finetunedblp_univ()
+#[8]   Done                    nohup python3 finetune_panrep_universal_mb.py > output/universal_task/finetune/dblp_pr_lp.out 2> output/universal_task/finetune/dblp_pr_lp.err
+#[9]-  Done                    nohup python3 finetune_panrep_universal_mb.py > output/universal_task/finetune/dblp_him_lp.out 2> output/universal_task/finetune/dblp_him_lp.err
+#[10]+  Done                    nohup python3 panrep4dr.py > output/universal_task/finetune/prdrkge800.out 2> output/universal_task/finetune/prdrkge800.err

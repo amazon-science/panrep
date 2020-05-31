@@ -17,7 +17,7 @@ class PanRepHetero(nn.Module):
                  dropout=0, loss_over_all_nodes=False, use_reconstruction_task=True, use_infomax_task=True,
                  link_prediction_task=False,use_cuda=False,average_across_node_types=False,
                  use_node_motif=False,link_predictor=None,out_motif_dict=None, use_cluster=False,
-                 single_layer=False,classifier=None,metapathRWSupervision=None):
+                 single_layer=False,classifier=None,metapathRWSupervision=None,focus_category=False):
         super(PanRepHetero, self).__init__()
         self.h_dim = h_dim
         self.out_dim = out_dim
@@ -28,7 +28,7 @@ class PanRepHetero(nn.Module):
         self.link_prediction_task=link_prediction_task
         self.loss_over_all_nodes=loss_over_all_nodes
         self.use_node_motif_task=use_node_motif
-
+        self.focus_category=focus_category
         self.classifier=classifier
         if metapathRWSupervision is not None:
             self.rw_supervision_task = True
@@ -36,7 +36,7 @@ class PanRepHetero(nn.Module):
             self.rw_supervision_task = False
         self.metapathRWSupervision=metapathRWSupervision
 
-        self.infomax=MutualInformationDiscriminator(n_hidden=h_dim,average_across_node_types=average_across_node_types)
+        self.infomax=MutualInformationDiscriminator(n_hidden=h_dim,average_across_node_types=average_across_node_types,focus_category=focus_category)
         self.use_cuda = use_cuda
         self.encoder = encoder
         if link_predictor is None:
@@ -100,8 +100,8 @@ class PanRepHetero(nn.Module):
         for ntype in encoding.keys():
             logits[ntype]=self.classifier.forward(encoding[ntype])
         return logits
-    def forward_mb(self, p_blocks, masked_nodes=None, p_g=None, n_g=None, n_blocks=None,
-                   num_chunks=None, chunk_size=None, neg_sample_size=None,rw_neighbors=None):
+
+    def forward_mb(self, p_blocks, masked_nodes=None, rw_neighbors=None):
 
         #h=self.encoder(corrupt=False)
         positive = self.encoder.forward_mb(p_blocks)

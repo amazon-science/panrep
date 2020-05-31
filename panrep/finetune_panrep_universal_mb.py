@@ -883,9 +883,14 @@ def direct_eval_pr_link_prediction(train_g,test_g,train_edges, valid_edges, test
 
 def finetune_pr_for_link_prediction(train_g, test_g, train_edges, valid_edges, test_edges, model, batch_size,
                                        n_hidden, ntype2id, ng_rate,fanout, l2norm,
-                                       n_layers, n_lp_fintune_epochs,lr_lp_ft, use_cuda, device):
-    finetune_link_predictor = LinkPredictor(out_dim=n_hidden, etypes=train_g.etypes,
-                                   ntype2id=ntype2id, use_cuda=use_cuda, edg_pct=1, ng_rate=ng_rate)
+                                       n_layers, n_lp_fintune_epochs,lr_lp_ft, use_cuda, device,learn_rel_embed=False):
+    if learn_rel_embed:
+        finetune_link_predictor = LinkPredictorLearnableEmbed(out_dim=n_hidden, etypes=train_g.etypes,
+                                                     ntype2id=ntype2id, use_cuda=use_cuda, edg_pct=1, ng_rate=ng_rate)
+    else:
+        finetune_link_predictor = LinkPredictor(out_dim=n_hidden, etypes=train_g.etypes,
+                                       ntype2id=ntype2id, use_cuda=use_cuda, edg_pct=1,
+                                       ng_rate=ng_rate)
 
     finetune_lp_model= copy.deepcopy(model)
     finetune_lp_model.linkPredictor=finetune_link_predictor
@@ -947,10 +952,31 @@ def eval_panrep(model,dataloader):
     print("=============Evaluation finished=============")
     return
 
-def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_prediction, use_reconstruction_loss,
-         use_infomax_loss, mask_links,use_self_loop,use_node_motif, num_cluster,single_layer,motif_cluster,k_fold,
-         rw_supervision,ng_rate,only_ssl,test_edge_split,args):
-    args.splitpct=0.05
+def _fit(args):
+    #dblp add the original node split and test...
+    args.splitpct = 0.1
+    rw_supervision = args.rw_supervision
+    n_layers = args.n_layers
+    use_reconstruction_loss = args.use_reconstruction_loss
+    num_cluster = args.num_cluster
+    use_node_motif = args.use_node_motif
+    k_fold = args.k_fold
+    test_edge_split = args.test_edge_split
+    use_link_prediction = args.use_link_prediction
+    motif_cluster = args.motif_cluster
+    use_infomax_loss = args.use_infomax_loss
+    mask_links = args.mask_links
+    n_hidden = args.n_hidden
+    n_bases = args.n_bases
+    dropout = args.dropout
+    fanout = args.fanout
+    use_self_loop = args.use_self_loop
+    ng_rate = args.ng_rate
+    n_epochs = args.n_epochs
+    lr = args.lr
+    n_fine_tune_epochs = args.n_fine_tune_epochs
+    only_ssl = args.only_ssl
+    single_layer = args.single_layer
     if rw_supervision and n_layers==1:
         return ""
     if num_cluster>0:
@@ -971,7 +997,10 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
     train_idx, test_idx, val_idx, labels, category, num_classes, masked_node_types, metapaths, \
     train_edges, test_edges, valid_edges, train_g, valid_g, test_g=\
         load_univ_hetero_data(args)
-
+    if args.focus:
+        args.focus_category=category
+    else:
+        args.focus_category=None
 
     # sampler parameters
     batch_size = 8 *1024
@@ -1082,7 +1111,7 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
                              use_cluster=num_cluster>0,
                              single_layer=False,
                              use_cuda=use_cuda,
-                             metapathRWSupervision=metapathRWSupervision)
+                             metapathRWSupervision=metapathRWSupervision, focus_category=args.focus_category)
 
 
     if use_cuda:
@@ -1103,10 +1132,10 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
     if use_cuda:
         train_g=train_g.to(device)
 
-    val_pct=0.1
-    evaluate_every=50
+    val_pct = 0.1
+    evaluate_every = 50
     sampler = InfomaxNodeRecNeighborSampler(train_g, [fanout] * (n_layers), device=device)
-    evaluate_panrep=False
+    evaluate_panrep = False
     if evaluate_panrep:
         pr_node_ids=list(sampler.hetero_map.keys())
         pr_val_ind=list(np.random.choice(len(pr_node_ids), int(len(pr_node_ids)*val_pct), replace=False))
@@ -1175,7 +1204,7 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
     print("Entropy: "+str(entropy))
     # evaluate link prediction
     pr_mrr="PanRep "
-    eval_lp=True
+    eval_lp=args.test_edge_split!=0
     if eval_lp:
         # Evaluate PanRep embeddings for link prediction
         n_lp_epochs=n_epochs
@@ -1194,11 +1223,11 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
         lr_lp_ft=lr
         pr_mrr+=finetune_pr_for_link_prediction(train_g, test_g, train_edges, valid_edges, test_edges, model, batch_size,
                                         n_hidden, ntype2id, ng_rate, fanout, l2norm,
-                                        n_layers, n_lp_fintune_epochs, lr_lp_ft, use_cuda, device)
+                                        n_layers, n_lp_fintune_epochs, lr_lp_ft, use_cuda, device,learn_rel_embed=learn_rel_embed)
 
 
-
-    if labels is not None:
+    eval_nc=False
+    if eval_nc and labels is not None:
         multilabel = False
         feats = embeddings[category]
         labels_i=np.argmax(labels.cpu().numpy(),axis=1)
@@ -1290,7 +1319,7 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
                         ))
         print()
 
-        adjust_pr_lr=True
+        adjust_pr_lr=False
         if adjust_pr_lr:
             cl_params = set(list(model.classifier.parameters()))
             tot_params = set(list(model.parameters()))
@@ -1403,21 +1432,27 @@ def macro_micro_f1(y_test, y_pred):
     print("Macro micro f1 " +str(macro_f1)+ " "+str(micro_f1))
     return macro_f1, micro_f1
 
+
 def fit(args):
-        n_epochs_list =[800]#[300,500,800]  # [250,300]
-        n_hidden_list = [300]#[300,500,700]#[50, 100, 300, 500, 700]  # [40,200,400]
-        n_fine_tune_epochs_list= [140]#[20,50]#[30,50,150]
-        n_layers_list = [1]#[2,3]#[2,3]
-        n_bases_list = [10]
+        '''
+        TODO
+            best results 700 hidden units so far
+        '''
+        n_epochs_list = [400]  # [250,300]
+        n_hidden_list = [200]  # [40,200,400]
+        n_layers_list = [2]
+        n_fine_tune_epochs_list= [2]#[20,50]#[30,50,150]
+        n_bases_list = [20]
         lr_list = [1e-3]
         dropout_list = [0.1]
+        focus=False
         fanout_list = [None]
-        test_edge_split_list = [0.05]
-        use_link_prediction_list = [True,False]
-        use_reconstruction_loss_list =[True,False]#[False,True]
-        use_infomax_loss_list = [True,False]#[False,True]
-        use_node_motif_list = [True,False]
-        rw_supervision_list=[True,False]
+        test_edge_split_list = [0.05,0.1,0.2,0.3,0.4]
+        use_link_prediction_list = [True]
+        use_reconstruction_loss_list =[True]#[False,True]
+        use_infomax_loss_list = [True]#[False,True]
+        use_node_motif_list = [True]
+        rw_supervision_list=[False]
         num_cluster_list=[6]
         K_list=[0]#[2,5,10,15]
         motif_cluster_list=[5]#[2,6,10]
@@ -1425,7 +1460,7 @@ def fit(args):
         use_self_loop_list=[True]
         ng_rate_list=[5]
         single_layer_list=[True]
-        only_ssl_list=[False]
+        only_ssl_list=[True]
         results={}
         for n_epochs in n_epochs_list:
             for n_fine_tune_epochs in n_fine_tune_epochs_list:
@@ -1455,42 +1490,55 @@ def fit(args):
                                                                                             else:
                                                                                                 fanout=None
                                                                                                 mask_links=False
-                                                                                                acc=_fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
-                                                                                                         use_link_prediction, use_reconstruction_loss,
-                                                                                                         use_infomax_loss, mask_links, use_self_loop,
-                                                                                                     use_node_motif,num_cluster,single_layer,
-                                                                                                         motif_cluster,k_fold,
-                                                                                                         rw_supervision,ng_rate,
-                                                                                                         only_ssl,test_edge_split,args)
-                                                                                                results[(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
-                                                                                                         use_link_prediction, use_reconstruction_loss,
-                                                                                                         use_infomax_loss, mask_links, use_self_loop,
-                                                                                                     use_node_motif,num_cluster,single_layer,
-                                                                                                         motif_cluster,k_fold,
-                                                                                                         rw_supervision,ng_rate,only_ssl,test_edge_split)]=acc
-
-                                                                                                result = "PanRep-RGCN Model, n_epochs {}; n_fine_tune_epochs {}; n_hidden {}; n_layers {}; n_bases {}; " \
-                                                                                                         "fanout {}; lr {}; dropout {} use_reconstruction_loss {} " \
-                                                                                                         "use_link_prediction {} use_infomax_loss {} mask_links {} " \
-                                                                                                         "use_self_loop {} use_node_motif {} num_cluster {}" \
-                                                                                                         " single_layer {} motif_cluster {} " \
-                                                                                                         "k_fold {} " \
-                                                                                                         "rw_supervision{} ng_rate{}" \
-                                                                                                         "only_ssl {} acc {}".format(
-                                                                                                    n_epochs,
-                                                                                                    n_fine_tune_epochs,
-                                                                                                    n_hidden,
-                                                                                                    n_layers,
-                                                                                                    n_bases,
-                                                                                                    0,
-                                                                                                    lr,
-                                                                                                    dropout,
-                                                                                                    use_reconstruction_loss,
-                                                                                                    use_link_prediction,
-                                                                                                    use_infomax_loss,
-                                                                                                    mask_links,use_self_loop,use_node_motif,
-                                                                                                    num_cluster,single_layer,motif_cluster,k_fold,
-                                                                                                    rw_supervision, ng_rate, only_ssl,acc)
+                                                                                                args.focus=focus
+                                                                                                args.rw_supervision = rw_supervision
+                                                                                                args.n_layers = n_layers
+                                                                                                args.use_reconstruction_loss = use_reconstruction_loss
+                                                                                                args.num_cluster = num_cluster
+                                                                                                args.use_node_motif = use_node_motif
+                                                                                                args.k_fold = k_fold
+                                                                                                args.test_edge_split = test_edge_split
+                                                                                                args.use_link_prediction = use_link_prediction
+                                                                                                args.motif_cluster = motif_cluster
+                                                                                                args.use_infomax_loss = use_infomax_loss
+                                                                                                args.mask_links = mask_links
+                                                                                                args.n_hidden = n_hidden
+                                                                                                args.n_bases = n_bases
+                                                                                                args.dropout = dropout
+                                                                                                args.fanout = fanout
+                                                                                                args.use_self_loop = use_self_loop
+                                                                                                args.ng_rate = ng_rate
+                                                                                                args.n_epochs = n_epochs
+                                                                                                args.lr = lr
+                                                                                                args.n_fine_tune_epochs = n_fine_tune_epochs
+                                                                                                args.only_ssl = only_ssl
+                                                                                                args.single_layer = single_layer
+                                                                                                acc = _fit(args)
+                                                                                                results[(n_epochs,
+                                                                                                         n_fine_tune_epochs,
+                                                                                                         n_layers,
+                                                                                                         n_hidden,
+                                                                                                         n_bases,
+                                                                                                         fanout, lr,
+                                                                                                         dropout,
+                                                                                                         use_link_prediction,
+                                                                                                         use_reconstruction_loss,
+                                                                                                         use_infomax_loss,
+                                                                                                         mask_links,
+                                                                                                         use_self_loop,
+                                                                                                         use_node_motif,
+                                                                                                         num_cluster,
+                                                                                                         single_layer,
+                                                                                                         motif_cluster,
+                                                                                                         k_fold,
+                                                                                                         rw_supervision,
+                                                                                                         ng_rate,
+                                                                                                         only_ssl,
+                                                                                                         focus,
+                                                                                                         test_edge_split)] = acc
+                                                                                                print(args)
+                                                                                                result = " acc {}".format(
+                                                                                                    acc)
                                                                                                 print(result)
         results[str(args)]=1
         file=args.dataset+'-'+str(datetime.date(datetime.now()))+"-"+str(datetime.time(datetime.now()))
@@ -1584,9 +1632,9 @@ def mlp_classifier(feats,use_cuda,n_hidden,lr_d,n_cepochs,multilabel,num_classes
         val_idx = np.array(list(set(val_idx).difference(set(zero_rows))))
         test_idx = np.array(list(set(test_idx).difference(set(zero_rows))))
 
-    train_indices = torch.tensor(train_idx).to(device);
-    valid_indices = torch.tensor(val_idx).to(device);
-    test_indices = torch.tensor(test_idx).to(device);
+    train_indices = torch.tensor(train_idx).to(device).long()
+    valid_indices = torch.tensor(val_idx).to(device).long()
+    test_indices = torch.tensor(test_idx).to(device).long()
 
 
 
@@ -1703,7 +1751,7 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'imdb_preprocessed','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'dblp_preprocessed','--encoder', 'RGCN'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     fit(args)

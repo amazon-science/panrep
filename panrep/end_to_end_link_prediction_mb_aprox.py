@@ -21,7 +21,7 @@ import torch.nn.functional as F
 import dgl
 import torch as th
 from classifiers import ClassifierMLP,DLinkPredictorOnlyRel,End2EndLinkPredictorRGCN
-from load_data import load_univ_hetero_data,generate_rwalks
+from load_data import load_univ_hetero_data
 from model import PanRepHetero
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader
@@ -935,21 +935,27 @@ def eval_panrep(model,dataloader):
     print("=============Evaluation finished=============")
     return
 
-def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
-         use_self_loop,k_fold,ng_rate,test_edge_split,args):
+def _fit(args):
     args.splitpct=None
     args.use_cluster = False
-    args.k_fold=k_fold
-    args.test_edge_split=test_edge_split
+    n_epochs=args.n_epochs
+    n_hidden=args.n_hidden
+    n_layers=args.n_layers
+    ng_rate=args.ng_rate
+    dropout=args.dropout
+    use_self_loop = args.use_self_loop
+    n_bases=args.n_bases
+    fanout=args.fanout
     args.few_shot=False
     args.use_link_prediction=True
     args.rw_supervision = False
     args.motif_clusters=0
+
+    lr=args.lr
     args.use_node_motifs=False
     train_idx, test_idx, val_idx, labels, category, num_classes, masked_node_types, metapaths, \
     train_edges, test_edges, valid_edges, train_g, valid_g, test_g=\
         load_univ_hetero_data(args)
-
 
     # sampler parameters
     batch_size = 8 *1024
@@ -979,9 +985,10 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
 
 
 
+
     link_predictor = LinkPredictor(out_dim=n_hidden, etypes=train_g.etypes,
                                                          ntype2id=ntype2id, use_cuda=use_cuda, edg_pct=1,
-                                                         ng_rate=ng_rate)
+                                                         ng_rate=ng_rate,shared_rel_emb=False)
 
     model = End2EndLinkPredictorRGCN(
                            h_dim=n_hidden,
@@ -989,7 +996,7 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
                            num_rels = len(set(train_g.etypes)),
                             rel_names=list(set(train_g.etypes)),
                            num_bases=n_bases,g=train_g,device=device,
-                           num_hidden_layers=n_layers - 1,
+                           num_hidden_layers=n_layers,
                            dropout=dropout,
                            use_self_loop=use_self_loop)
     model.link_predictor=link_predictor
@@ -1062,18 +1069,23 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,
             eval_panrep(model=model, dataloader=valid_loader)
 
 
-
+    save_model=False
+    if save_model:
+        folder='saved_model/'
+        model_name = "model" +str(datetime.date(datetime.now())) + "-" + str(
+            datetime.time(datetime.now()))
+        th.save(model.state_dict(), folder + model_name)
     # evaluate link prediction
     pr_mrr="RGCN "
     eval_lp=True
-    if eval_lp:
+    if eval_lp and args.dataset!="drkg":
         # Evaluated LP model in PanRep for link prediction
         pr_mrr+=direct_eval_lppr_link_prediction(test_g, model, train_edges, valid_edges, test_edges, n_hidden, n_layers,
                                               eval_neg_cnt=100, use_cuda=True)
 
 
 
-    return"PR MRR : " + pr_mrr
+    return"MRR : " + pr_mrr
 def macro_micro_f1(y_test, y_pred):
     macro_f1 = f1_score(y_test, y_pred, average='macro')
     micro_f1 = f1_score(y_test, y_pred, average='micro')
@@ -1081,15 +1093,15 @@ def macro_micro_f1(y_test, y_pred):
     return macro_f1, micro_f1
 
 def fit(args):
-        n_epochs_list =[200,400,600,800]#[300,500,800]  # [250,300]
-        n_hidden_list = [300,400,500,600]#[300,500,700]#[50, 100, 300, 500, 700]  # [40,200,400]
-        n_layers_list = [1,2]#[2,3]#[2,3]
+        n_epochs_list =[800]#[300,500,800]  # [250,300]
+        n_hidden_list = [600]#[300,500,700]#[50, 100, 300, 500, 700]  # [40,200,400]
+        n_layers_list = [1]#[2,3]#[2,3]
         n_bases_list = [10]
         lr_list = [1e-3]
         dropout_list = [0.1]
-        fanout_list = [None]
-        K_list=[0]#[2,5,10,15]
-        test_edge_split_list=[0.05,0.1,0.2,0.3,0.4]
+        fanout_list = [10]
+        K_shot_edge_list=[10]#,50,100,1000]#[2,5,10,15]
+        test_edge_split_list=[0]
         use_self_loop_list=[True]
         ng_rate_list=[5]
         results={}
@@ -1102,12 +1114,36 @@ def fit(args):
                                     for dropout in dropout_list:
                                                     for test_edge_split in test_edge_split_list:
                                                         for use_self_loop in use_self_loop_list:
-                                                                                for k_fold in K_list:
+                                                                                for k_fold in K_shot_edge_list:
                                                                                     for ng_rate in ng_rate_list:
-                                                                                        acc=_fit(n_epochs, n_layers,n_hidden,
-                                                                                                 n_bases, fanout, lr, dropout,
-                                                                                                    use_self_loop,k_fold,ng_rate,
-                                                                                                 test_edge_split,args)
+                                                                                        rw_supervision = False
+                                                                                        use_reconstruction_loss = False
+                                                                                        use_node_motif = False
+                                                                                        use_infomax_loss = False
+                                                                                        use_link_prediction = True
+                                                                                        mask_links = False
+                                                                                        args.splitpct = 0.05
+                                                                                        args.rw_supervision = rw_supervision
+                                                                                        args.n_layers = n_layers
+                                                                                        args.use_reconstruction_loss = use_reconstruction_loss
+                                                                                        args.use_node_motif = use_node_motif
+                                                                                        args.k_fold = 0
+                                                                                        args.k_shot_edge=k_fold
+                                                                                        args.test_edge_split = test_edge_split
+                                                                                        args.use_link_prediction = use_link_prediction
+                                                                                        args.use_infomax_loss = use_infomax_loss
+                                                                                        args.mask_links = mask_links
+                                                                                        args.n_hidden = n_hidden
+                                                                                        args.n_bases = n_bases
+                                                                                        args.dropout = dropout
+                                                                                        args.fanout = fanout
+                                                                                        args.use_self_loop = use_self_loop
+                                                                                        args.ng_rate = ng_rate
+                                                                                        args.n_epochs = n_epochs
+                                                                                        args.lr = lr
+
+                                                                                        acc=_fit(args)
+                                                                                        print(args)
                                                                                         results[(n_epochs,
                                                                                                  n_layers, n_hidden, n_bases, fanout, lr, dropout,
                                                                                                  use_self_loop,
@@ -1266,7 +1302,7 @@ if __name__ == '__main__':
             help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=60,
             help="number of hidden units") # use 16, 2 for debug
-    parser.add_argument("--gpu", type=int, default=5,
+    parser.add_argument("--gpu", type=int, default=7,
             help="gpu")
     parser.add_argument("--lr", type=float, default=1e-3,
             help="learning rate")
@@ -1325,7 +1361,7 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'imdb_preprocessed','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'drkg','--encoder', 'RGCN'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     fit(args)
