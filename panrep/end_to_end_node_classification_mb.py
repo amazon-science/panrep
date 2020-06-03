@@ -75,7 +75,7 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr,dropout, use_self_loo
     args.use_node_motifs=False
     args.rw_supervision=False
     args.few_shot=False
-    args.test_edge_split=0
+    args.test_edge_split=-0.025
     args.splitpct=split_pct
     train_idx, test_idx, val_idx, labels, category, num_classes, masked_node_types, metapaths, \
     train_edges, test_edges, valid_edges, train_g, valid_g, test_g = load_univ_hetero_data(args)
@@ -273,8 +273,8 @@ def evaluate_results_nc(embeddings, labels, num_classes):
     return svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std,macro_str,micro_str
 
 def fit(args):
-        n_epochs_list = [100,150,200]#[250,300]
-        n_hidden_list =[50,64,84]#[40,200,400]
+        n_epochs_list = [100,200]#[250,300]
+        n_hidden_list =[400]#[40,200,400]
         n_layers_list = [2,3,4]
         n_bases_list = [30]
         lr_list = [1e-3]
@@ -282,7 +282,7 @@ def fit(args):
         fanout_list = [None]
         use_self_loop_list = [True]
         K_list = [0]
-        split_pct_list=[0.1]
+        split_pct_list=[0.05,0.1,0.2]
         results={}
         for n_epochs in n_epochs_list:
             for n_hidden in n_hidden_list:
@@ -322,7 +322,7 @@ if __name__ == '__main__':
             help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=50,
             help="number of hidden units") # use 16, 2 for debug
-    parser.add_argument("--gpu", type=int, default=2,
+    parser.add_argument("--gpu", type=int, default=5,
             help="gpu")
     parser.add_argument("--lr", type=float, default=1e-2,
             help="learning rate")
@@ -361,7 +361,7 @@ if __name__ == '__main__':
     parser.set_defaults(validation=True)
 
 
-    args = parser.parse_args(['--dataset', 'dblp_preprocessed'])
+    args = parser.parse_args(['--dataset', 'oag'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     main(args)

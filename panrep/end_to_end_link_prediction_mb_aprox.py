@@ -936,7 +936,6 @@ def eval_panrep(model,dataloader):
     return
 
 def _fit(args):
-    args.splitpct=None
     args.use_cluster = False
     n_epochs=args.n_epochs
     n_hidden=args.n_hidden
@@ -1093,15 +1092,15 @@ def macro_micro_f1(y_test, y_pred):
     return macro_f1, micro_f1
 
 def fit(args):
-        n_epochs_list =[800]#[300,500,800]  # [250,300]
-        n_hidden_list = [600]#[300,500,700]#[50, 100, 300, 500, 700]  # [40,200,400]
-        n_layers_list = [1]#[2,3]#[2,3]
+        n_epochs_list =[300,500]  # [250,300]
+        n_hidden_list = [300,500]#[50, 100, 300, 500, 700]  # [40,200,400]
+        n_layers_list = [2,3]#[2,3]
         n_bases_list = [10]
         lr_list = [1e-3]
         dropout_list = [0.1]
         fanout_list = [10]
-        K_shot_edge_list=[10]#,50,100,1000]#[2,5,10,15]
-        test_edge_split_list=[0]
+        K_shot_edge_list=[0]#,50,100,1000]#[2,5,10,15]
+        test_edge_split_list=[0.05,0.1,0.2,0.3,0.4]
         use_self_loop_list=[True]
         ng_rate_list=[5]
         results={}
@@ -1302,7 +1301,7 @@ if __name__ == '__main__':
             help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=60,
             help="number of hidden units") # use 16, 2 for debug
-    parser.add_argument("--gpu", type=int, default=7,
+    parser.add_argument("--gpu", type=int, default=0,
             help="gpu")
     parser.add_argument("--lr", type=float, default=1e-3,
             help="learning rate")
@@ -1361,7 +1360,7 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'drkg','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'oag','--encoder', 'RGCN'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     fit(args)

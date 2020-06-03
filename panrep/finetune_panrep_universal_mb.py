@@ -954,7 +954,7 @@ def eval_panrep(model,dataloader):
 
 def _fit(args):
     #dblp add the original node split and test...
-    args.splitpct = 0.1
+
     rw_supervision = args.rw_supervision
     n_layers = args.n_layers
     use_reconstruction_loss = args.use_reconstruction_loss
@@ -1003,7 +1003,7 @@ def _fit(args):
         args.focus_category=None
 
     # sampler parameters
-    batch_size = 8 *1024
+    batch_size = 16*1024
     l2norm=0.0001
 
     # check cuda
@@ -1204,7 +1204,7 @@ def _fit(args):
     print("Entropy: "+str(entropy))
     # evaluate link prediction
     pr_mrr="PanRep "
-    eval_lp=args.test_edge_split!=0
+    eval_lp=args.test_edge_split>0
     if eval_lp:
         # Evaluate PanRep embeddings for link prediction
         n_lp_epochs=n_epochs
@@ -1226,9 +1226,9 @@ def _fit(args):
                                         n_layers, n_lp_fintune_epochs, lr_lp_ft, use_cuda, device,learn_rel_embed=learn_rel_embed)
 
 
-    eval_nc=False
+    eval_nc=True
     if eval_nc and labels is not None:
-        multilabel = False
+        multilabel = True
         feats = embeddings[category]
         labels_i=np.argmax(labels.cpu().numpy(),axis=1)
         lr_d=lr
@@ -1391,7 +1391,7 @@ def _fit(args):
                 dur.append(time.time() - t0)
 
             val_loss, val_acc,val_acc_auc = evaluate_prfin_for_node_classification\
-                (model, val_idx, val_blocks, device, labels, category, use_cuda,loss_func, multilabel=False)
+                (model, val_idx, val_blocks, device, labels, category, use_cuda,loss_func, multilabel=multilabel)
             print("Epoch {:05d} | Valid Acc: {:.4f} |Valid Acc Auc: {:.4f} | Valid loss: {:.4f} | Time: {:.4f}".
                   format(epoch, val_acc, val_acc_auc,val_loss.item(), np.average(dur)))
         print()
@@ -1438,20 +1438,21 @@ def fit(args):
         TODO
             best results 700 hidden units so far
         '''
-        n_epochs_list = [400]  # [250,300]
-        n_hidden_list = [200]  # [40,200,400]
-        n_layers_list = [2]
-        n_fine_tune_epochs_list= [2]#[20,50]#[30,50,150]
+        args.splitpct = 0.2
+        n_epochs_list = [600]#[250,300]
+        n_hidden_list =[50,100]#[40,200,400]
+        n_layers_list = [2,3,4]
+        n_fine_tune_epochs_list= [100]#[20,50]#[30,50,150]
         n_bases_list = [20]
-        lr_list = [1e-3]
+        lr_list = [2e-3]
         dropout_list = [0.1]
         focus=False
         fanout_list = [None]
-        test_edge_split_list = [0.05,0.1,0.2,0.3,0.4]
+        test_edge_split_list = [-0.025]
         use_link_prediction_list = [True]
         use_reconstruction_loss_list =[True]#[False,True]
         use_infomax_loss_list = [True]#[False,True]
-        use_node_motif_list = [True]
+        use_node_motif_list = [False]
         rw_supervision_list=[False]
         num_cluster_list=[6]
         K_list=[0]#[2,5,10,15]
@@ -1692,7 +1693,7 @@ if __name__ == '__main__':
             help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=60,
             help="number of hidden units") # use 16, 2 for debug
-    parser.add_argument("--gpu", type=int, default=4,
+    parser.add_argument("--gpu", type=int, default=2,
             help="gpu")
     parser.add_argument("--lr", type=float, default=1e-3,
             help="learning rate")
@@ -1751,7 +1752,7 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'dblp_preprocessed','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'oag','--encoder', 'RGCN'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     fit(args)
