@@ -1003,7 +1003,7 @@ def _fit(args):
         args.focus_category=None
 
     # sampler parameters
-    batch_size = 8 *1024
+    batch_size = 16 *1024
     l2norm=0.0001
 
     # check cuda
@@ -1440,16 +1440,16 @@ def fit(args):
             best results 700 hidden units so far
         '''
         args.splitpct = 0.1
-        n_epochs_list = [400,500,600]
-        n_hidden_list = [100,200,300]
-        n_layers_list = [2,3,4]
+        n_epochs_list = [800]
+        n_hidden_list = [250]
+        n_layers_list = []
         n_fine_tune_epochs_list= [50]#[20,50]#[30,50,150]
-        n_bases_list = [20]
+        n_bases_list = [2]
         lr_list = [2e-3]
         dropout_list = [0.1]
         focus=False
         fanout=10
-        test_edge_split_list = [0.4
+        test_edge_split_list = [0.05
                                 ]
         use_link_prediction_list = [True]
         use_reconstruction_loss_list =[True]#[False,True]
@@ -1695,7 +1695,7 @@ if __name__ == '__main__':
             help="dropout probability")
     parser.add_argument("--n-hidden", type=int, default=60,
             help="number of hidden units") # use 16, 2 for debug
-    parser.add_argument("--gpu", type=int, default=7,
+    parser.add_argument("--gpu", type=int, default=5,
             help="gpu")
     parser.add_argument("--lr", type=float, default=1e-3,
             help="learning rate")
@@ -1754,7 +1754,7 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'oag','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'oag_na', '--encoder', 'RGCN'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     fit(args)

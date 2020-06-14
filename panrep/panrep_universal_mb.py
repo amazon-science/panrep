@@ -1026,6 +1026,7 @@ def _fit(args):
     negative_rate = -1
     link_prediction = use_link_prediction
     mask_links = mask_links
+    svm_eval=False
 
 
     # for the embedding layer
@@ -1133,9 +1134,9 @@ def _fit(args):
         train_g=train_g.to(device)
 
     val_pct = 0.1
-    evaluate_every = 50
+    evaluate_every = 20
     sampler = InfomaxNodeRecNeighborSampler(train_g, [fanout] * (n_layers), device=device)
-    evaluate_panrep = False
+    evaluate_panrep = True
     if evaluate_panrep:
         pr_node_ids=list(sampler.hetero_map.keys())
         pr_val_ind=list(np.random.choice(len(pr_node_ids), int(len(pr_node_ids)*val_pct), replace=False))
@@ -1208,9 +1209,9 @@ def _fit(args):
     if eval_lp:
         # Evaluate PanRep embeddings for link prediction
         n_lp_epochs=n_epochs
-        pr_mrr+=direct_eval_pr_link_prediction(train_g, test_g,train_edges, valid_edges, test_edges,
-                                       fanout, batch_size, n_hidden, ntype2id, ng_rate, l2norm,
-                                       n_layers, n_lp_epochs, embeddings, use_cuda, device)
+        #pr_mrr+=direct_eval_pr_link_prediction(train_g, test_g,train_edges, valid_edges, test_edges,
+        #                               fanout, batch_size, n_hidden, ntype2id, ng_rate, l2norm,
+        #                               n_layers, n_lp_epochs, embeddings, use_cuda, device)
 
 
         if use_link_prediction:
@@ -1407,6 +1408,8 @@ def _fit(args):
             logits=model.classifier_forward(train_g)[category]
 
         acc = torch.sum(logits[test_idx].argmax(dim=1) == labels[test_idx].cpu().argmax(dim=1)).item() / len(test_idx)
+        test_acc = roc_auc_score(labels[test_idx].cpu()
+                                 , logits[test_idx], average='macro')
         print("Test accuracy: {:4f}".format(acc))
         print("Mean forward time: {:4f}".format(np.mean(forward_time[len(forward_time) // 4:])))
         print("Mean backward time: {:4f}".format(np.mean(backward_time[len(backward_time) // 4:])))
@@ -1415,12 +1418,18 @@ def _fit(args):
         test_acc_ftembed=mlp_classifier(
             feats, use_cuda, n_hidden, lr_d, n_cepochs, multilabel, num_classes, labels, train_idx, val_idx, test_idx, device)
         labels_i=np.argmax(labels.cpu().numpy(),axis=1)
-        svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std,finmacro_str,finmicro_str = evaluate_results_nc(
-            feats[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
-        print("With logits")
-        svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std, macro_str_log, micro_str_log = evaluate_results_nc(
-            logits[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
-        return " | PanRep " +macro_str+" "+micro_str+ " | Test accuracy: {:4f} | ".format(acc)+" " \
+        if svm_eval:
+            svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std,finmacro_str,finmicro_str = evaluate_results_nc(
+                feats[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
+            print("With logits")
+            svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std, macro_str_log, micro_str_log = evaluate_results_nc(
+                logits[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
+        else:
+            finmacro_str=""
+            finmicro_str=""
+            macro_str_log=""
+            micro_str_log=""
+        return " | PanRep " +macro_str+" "+micro_str+ " | Test accuracy: {:4f} | ".format(test_acc)+" " \
         "| Finetune "+finmacro_str+" "+finmicro_str+"PR MRR : "+pr_mrr+" Logits: "+macro_str_log+" "+\
                micro_str_log +" Entropy "+ str(entropy) + " Test acc PR embed "+str(test_acc_prembed)+\
                " Test acc PRft embed "+str(test_acc_ftembed)
@@ -1440,9 +1449,9 @@ def fit(args):
         '''
         args.splitpct = 0.2
         n_epochs_list = [600]#[250,300]
-        n_hidden_list =[50,100]#[40,200,400]
+        n_hidden_list =[200]#[40,200,400]
         n_layers_list = [2,3,4]
-        n_fine_tune_epochs_list= [100]#[20,50]#[30,50,150]
+        n_fine_tune_epochs_list= [600]#[20,50]#[30,50,150]
         n_bases_list = [20]
         lr_list = [2e-3]
         dropout_list = [0.1]

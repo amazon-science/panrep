@@ -961,7 +961,7 @@ def _fit(n_epochs, model, n_hidden, n_bases, fanout, lr, dropout,
     use_cuda = args.gpu >= 0 and torch.cuda.is_available()
     if use_cuda:
         torch.cuda.set_device(args.gpu)
-    gpu='4 5 6 7'
+    gpu='0 1 2 3 4'
     print("dglke_train --model_name "+ model+" --dataset IMDB"+str(test_edge_split)+ " "
                 " --data_path ../data/"+args.dataset+"/ " +"--data_files train.txt valid.txt test.txt"
                " --format 'raw_udd_hrt' --batch_size 1000 --neg_sample_size  100 --neg_sample_size_eval 100 --no_eval_filter"
@@ -1010,7 +1010,7 @@ def macro_micro_f1(y_test, y_pred):
 def fit(args):
         n_epochs_list = [600]  # [300,500,800]  # [250,300]
         n_hidden_list = [300]#[300,500,700]#[50, 100, 300, 500, 700]  # [40,200,400]
-        model_list= [ "ComplEx"]#[2,3]#[2,3]
+        model_list= [ "DistMult"]#[2,3]#[2,3]
         n_bases_list = [10]
         lr_list = [1e-1]
         dropout_list = [0.1]
@@ -1248,7 +1248,7 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'oag','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'oag_na','--encoder', 'RGCN'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     fit(args)

@@ -11421,6 +11421,36 @@ if __name__ == '__main__':
     #finetuneimdb_adjusted_large_scale_learning_rate_to_base_layers()
     #finetuneimdb_dif_edge_splits_dif_lr()
     #finetunedblp_univ()
-#[8]   Done                    nohup python3 finetune_panrep_universal_mb.py > output/universal_task/finetune/dblp_pr_lp.out 2> output/universal_task/finetune/dblp_pr_lp.err
-#[9]-  Done                    nohup python3 finetune_panrep_universal_mb.py > output/universal_task/finetune/dblp_him_lp.out 2> output/universal_task/finetune/dblp_him_lp.err
-#[10]+  Done                    nohup python3 panrep4dr.py > output/universal_task/finetune/prdrkge800.out 2> output/universal_task/finetune/prdrkge800.err
+#[1]   Done                    nohup python3 end_to_end_node_classification_mb.py > output/node_classification/end_to_end/oag.out 2> output/node_classification/end_to_end/oag.err
+'''
+Macro-F1: 0.438553~0.010618 (0.8), 0.441630~0.006741 (0.6), 0.440391~0.004472 (0.4), 0.442236~0.005027 (0.2)
+Micro-F1: 0.759470~0.012705 (0.8), 0.756581~0.006992 (0.6), 0.754991~0.005222 (0.4), 0.754465~0.003190 (0.2)
+K-means test
+NMI: 0.235264~0.003833
+ARI: 0.074651~0.016102
+Test Acc: 0.6991| Test Acc Auc: 0.8502  | Test loss: 0.4388
+RGCN Model, n_epochs 200; n_hidden 84; n_layers 3; n_bases 30; fanout 0; lr 0.001; dropout 0.1use_self_loop True K 0 split_pct0.1
+'''
+[12]+  Done                    nohup python3 finetune_panrep_universal_mb.py > output/universal_task/finetune/oag_ablat.out 2> output/universal_task/finetune/oag_abl.err
+[6]   Done                    nohup python3 finetune_panrep_universal_mb_lp.py > output/universal_task/finetune/oag_lp005.out 2> output/universal_task/finetune/oaglp005nr.err
+[7]   Done                    nohup python3 finetune_panrep_universal_mb_lp.py > output/universal_task/finetune/oag_lp01.out 2> output/universal_task/finetune/oaglp01nr.err
+[9]   Done                    nohup python3 finetune_panrep_universal_mb_lp.py > output/universal_task/finetune/oag_lp03.out 2> output/universal_task/finetune/oaglp03nr.err
+[10]-  Done                    nohup python3 finetune_panrep_universal_mb_lp.py > output/universal_task/finetune/oag_lp04.out 2> output/universal_task/finetune/oaglp04nr.err
+[11]+  Done                    nohup python3 end_to_end_link_prediction_mb_aprox.py > output/link_prediction/end_to_end/oag.out 2> output/link_prediction/end_to_end/oag.err
+[2]   Done                    nohup python3 finetune_panrep_universal_mb.py > output/universal_task/finetune/oag_600ep005.out 2> output/universal_task/finetune/oag_600ep005.err
+[3]-  Done                    nohup python3 finetune_panrep_universal_mb.py > output/universal_task/finetune/oag_600ep01.out 2> output/universal_task/finetune/oag_600ep01.err
+[4]+  Done                    nohup python3 finetune_panrep_universal_mb.py > output/universal_task/finetune/oag_600ep02.out 2> output/universal_task/finetune/oag_600ep02.err
+[2]   Done                    nohup python3 finetune_panrep_universal_mb_lp.py > output/universal_task/finetune/oag_lp01lg800.out 2> output/universal_task/finetune/oaglp01nrlg800.err
+[3]   Done                    nohup python3 finetune_panrep_universal_mb_lp.py > output/universal_task/finetune/oag_lp02lg800.out 2> output/universal_task/finetune/oaglp02nrlg800.err
+[4]-  Done                    nohup python3 finetune_panrep_universal_mb_lp.py > output/universal_task/finetune/oag_lp03lg800.out 2> output/universal_task/finetune/oaglp03nrlg800.err
+[5]+  Done                    nohup python3 finetune_panrep_universal_mb_lp.py > output/universal_task/finetune/oag_lp04lg800.out 2> output/universal_task/finetune/oaglp04nrlg800.err
+[2]   Done                    nohup python3 finetune_panrep_universal_mb_lp.py > output/universal_task/finetune/oagna.out 2> output/universal_task/finetune/oagna.err
+[4]   Done                    nohup python3 finetune_panrep_universal_mb_lp.py > output/universal_task/finetune/oagna005L1.out 2> output/universal_task/finetune/oagna005L1.err
+
+[1]   Done                    nohup python3 finetune_panrep_universal_mb_lp.py > output/universal_task/finetune/oag_lp005lg800.out 2> output/universal_task/finetune/oaglp005nrlg800.err
+[7]   Done                    nohup python3 finetune_panrep_universal_mb_lp.py > output/universal_task/finetune/oagna005L2bs.out 2> output/universal_task/finetune/oagna005L2bs.err
+[8]-  Done                    nohup python3 finetune_panrep_universal_mb_lp.py > output/universal_task/finetune/oagna005L2bs300.out 2> output/universal_task/finetune/oagna005L2bs300.err
+[9]+  Done                    nohup python3 finetune_panrep_universal_mb_lp.py > output/universal_task/finetune/oagna005L3bs300.out 2> output/universal_task/finetune/oagna005L3bs300.err
+[1]-  Done                    nohup python3 finetune_panrep_universal_mb_lp.py > output/universal_task/finetune/oagna005L2b3.out 2> output/universal_task/finetune/oagna005L2b3.err
+[2]+  Done                    nohup python3 finetune_panrep_universal_mb_lp.py > output/universal_task/finetune/oag005L2b3.out 2> output/universal_task/finetune/oag005L2b3.err
+[1]+  Done                    nohup python3 finetune_panrep_universal_mb_lp.py > output/universal_task/finetune/oag005L2b7.out 2> output/universal_task/finetune/oag005L2b7.err

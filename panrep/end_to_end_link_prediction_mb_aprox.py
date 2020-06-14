@@ -1092,9 +1092,9 @@ def macro_micro_f1(y_test, y_pred):
     return macro_f1, micro_f1
 
 def fit(args):
-        n_epochs_list =[300,500]  # [250,300]
-        n_hidden_list = [300,500]#[50, 100, 300, 500, 700]  # [40,200,400]
-        n_layers_list = [2,3]#[2,3]
+        n_epochs_list =[600]  # [250,300]
+        n_hidden_list = [200]#[50, 100, 300, 500, 700]  # [40,200,400]
+        n_layers_list = [3]#[2,3]
         n_bases_list = [10]
         lr_list = [1e-3]
         dropout_list = [0.1]
