@@ -15,8 +15,10 @@ def compute_cluster_assignemnts(features,cluster_number):
     one_hot=pd.get_dummies(label)
 
     return torch.tensor(one_hot.values).float()
-def generate_rwalks(g,metapaths,samples_per_node=20,device=None):
+def generate_rwalks(g,metapaths,samples_per_node=20,device=None,rw_supervision=True):
     rw_neighbors={}
+    if not rw_supervision:
+        return None
     for ntype in metapaths.keys():
         if ntype in g.ntypes:
             traces,types=dgl.sampling.random_walk(g, list(np.arange(g.number_of_nodes(ntype)))* samples_per_node, metapath = metapaths[ntype])
@@ -77,6 +79,12 @@ def load_univ_hetero_data(args):
         train_edges, test_edges, valid_edges, train_g, valid_g, test_g=load_drkg_edge_few_shot_data(args)
     else:
         raise NotImplementedError
+    if labels is not None and len(labels.shape)>1:
+        zero_rows=np.where(~(labels).cpu().numpy().any(axis=1))[0]
+
+        train_idx=np.array(list(set(train_idx).difference(set(zero_rows))))
+        val_idx = np.array(list(set(val_idx).difference(set(zero_rows))))
+        test_idx = np.array(list(set(test_idx).difference(set(zero_rows))))
     return train_idx,test_idx,val_idx,labels,category,num_classes,featless_node_types,rw_neighbors,\
             train_edges, test_edges, valid_edges, train_g, valid_g, test_g
 
