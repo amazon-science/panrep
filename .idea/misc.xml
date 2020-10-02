@@ -3,7 +3,7 @@
   <component name="JavaScriptSettings">
     <option name="languageLevel" value="ES6" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="gpu_machine_my_dgl" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="aws_machine_python_3" project-jdk-type="Python SDK" />
   <component name="PyPackaging">
     <option name="earlyReleasesAsUpgrades" value="true" />
   </component>

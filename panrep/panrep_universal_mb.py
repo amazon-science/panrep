@@ -16,7 +16,9 @@ from utils import calculate_entropy
 from datetime import datetime
 import pickle
 import argparse
+
 import numpy as np
+
 import copy
 import time
 import torch
@@ -325,7 +327,7 @@ def _fit(args):
     if use_cuda:
         model.cuda()
         labels = labels.cuda()
-        train_g = train_g.to(device)
+        #train_g = train_g.to(device)
 
 
     # optimizer
@@ -365,7 +367,7 @@ def _fit(args):
     if use_cuda:
         model.cuda()
         model.encoder.cuda()
-        train_g=train_g.to(device)
+        #train_g=train_g.to(device)
     #calculate entropy
     entropy = calculate_entropy(embeddings)
     print("Entropy: "+str(entropy))
@@ -601,23 +603,23 @@ def fit(args):
         TODO
             best results 700 hidden units so far
         '''
-        args.splitpct = 0.2
-        n_epochs_list = [600]#[250,300]
-        n_hidden_list =[200]#[40,200,400]
-        n_layers_list = [2,3,4]
-        n_fine_tune_epochs_list= [600]#[20,50]#[30,50,150]
-        n_bases_list = [20]
-        lr_list = [2e-3]
+        args.splitpct = 0.1
+        n_epochs_list = [800]#[250,300]
+        n_hidden_list =[300]#[40,200,400]
+        n_layers_list = [1]
+        n_fine_tune_epochs_list= [140]#[20,50]#[30,50,150]
+        n_bases_list = [10]
+        lr_list = [1e-3]
         dropout_list = [0.1]
         focus=False
         fanout_list = [None]
         test_edge_split_list = [-0.025]
-        use_link_prediction_list = [True]
+        use_link_prediction_list = [False]
         use_reconstruction_loss_list =[True]#[False,True]
-        use_infomax_loss_list = [True]#[False,True]
+        use_infomax_loss_list =[False]#[False,True]
         use_node_motif_list = [False]
         rw_supervision_list=[False]
-        num_cluster_list=[6]
+        num_cluster_list=[0,2,4,6,10]
         K_list=[0]#[2,5,10,15]
         motif_cluster_list=[5]#[2,6,10]
         #mask_links_list = [False]
@@ -776,7 +778,7 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'oag','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'imdb_preprocessed','--encoder', 'RGCN'])
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     fit(args)

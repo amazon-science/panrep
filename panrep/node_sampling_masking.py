@@ -192,7 +192,8 @@ class InfomaxNodeRecNeighborSampler:
             for ntype in seeds:
                 seeds[ntype]=torch.tensor(seeds[ntype])#.to(device)
         else:
-            seeds = {self.category: torch.tensor(seeds_list).long()}
+            seeds = {self.category: torch.tensor(seeds_list).long()#.to(device)
+                     }
         cur = seeds
         frontier_time_s=time.time()
         for fanout in self.fanouts:

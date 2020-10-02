@@ -16,7 +16,7 @@
       <sourceFolder url="file://$MODULE_DIR$/aux_files/graphqembed-master" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/aux_files/MAGNN-master" isTestSource="false" />
     </content>
-    <orderEntry type="jdk" jdkName="gpu_machine_my_dgl" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="aws_machine_python_3" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
 </module>
