@@ -1,11 +1,8 @@
 """
-Modeling Relational Data with Graph Convolutional Networks
-Paper: https://arxiv.org/abs/1703.06103
-Code: https://github.com/tkipf/relational-gcn
+PanRep: Universal node embeddings for heterogeneous graphs
+Paper:
+Code:
 
-Difference compared to tkipf/relation-gcn
-* l2norm applied to all weights
-* remove nodes that won't be touched
 """
 from link_prediction_evaluation import evaluation_link_prediction, \
     direct_eval_lppr_link_prediction
@@ -31,9 +28,8 @@ from node_supervision_tasks import MetapathRWalkerSupervision, LinkPredictor,Lin
 from encoders import EncoderRelGraphConvHetero
 
 
-def evaluate_prfin_for_node_classification(model, seeds, blocks, device, labels, category, use_cuda,loss_func, multilabel=False):
+def evaluate_panrep_fn_for_node_classification(model, seeds, blocks, device, labels, category, use_cuda, loss_func, multilabel=False):
     model.eval()
-    #emb = extract_embed(node_embed, blocks[0])
     lbl = labels[seeds]
     if use_cuda:
         lbl = lbl.cuda()
@@ -56,9 +52,9 @@ def evaluate_prfin_for_node_classification(model, seeds, blocks, device, labels,
     return loss, acc,acc_auc
 
 
-def finetune_pr_for_link_prediction(train_g, test_g, train_edges, valid_edges, test_edges, model, batch_size,
-                                       n_hidden,  ng_rate,fanout, l2norm,
-                                       n_layers, n_lp_fintune_epochs,lr_lp_ft, use_cuda, device,learn_rel_embed=False):
+def finetune_panrep_fn_for_link_prediction(train_g, test_g, train_edges, valid_edges, test_edges, model, batch_size,
+                                           n_hidden, ng_rate, fanout, l2norm,
+                                           n_layers, n_lp_fintune_epochs, lr_lp_ft, use_cuda, device, learn_rel_embed=False):
     ntype2id = {}
     for i, ntype in enumerate(train_g.ntypes):
             ntype2id[ntype] = i
@@ -228,6 +224,161 @@ def initiate_model(args,masked_node_types,train_g):
                              use_cuda=use_cuda,
                              metapathRWSupervision=metapathRWSupervision, focus_category=args.focus_category)
     return model
+def finetune_panrep_for_node_classification(batch_size, category, device, fanout, feats, l2norm, labels, lr, metapaths,
+                                            model, multilabel, n_fine_tune_epochs, n_hidden, n_layers, num_classes,
+                                            only_ssl, optimizer, rw_supervision, single_layer, test_idx, train_g,
+                                            train_idx, use_cuda, val_idx):
+    sampler = InfomaxNodeRecNeighborSampler(train_g, [fanout] * (n_layers), device=device, category=category)
+    fine_tune_loader = DataLoader(dataset=list(train_idx),
+                                  batch_size=batch_size,
+                                  collate_fn=sampler.sample_blocks,
+                                  shuffle=True,
+                                  num_workers=0)
+    # validation sampler
+    val_sampler = HeteroNeighborSampler(train_g, category, [fanout] * n_layers, True)
+    _, val_blocks = val_sampler.sample_blocks(val_idx)
+    # test sampler
+    test_sampler = HeteroNeighborSampler(train_g, category, [fanout] * n_layers, True)
+    _, test_blocks = test_sampler.sample_blocks(test_idx)
+    # set up fine_tune epochs
+    # donwstream classifier for model supervision
+    model.classifier = ClassifierMLP(input_size=n_hidden, hidden_size=n_hidden, out_size=num_classes,
+                                     single_layer=single_layer)
+    if multilabel is False:
+        loss_func = torch.nn.CrossEntropyLoss()
+    else:
+        loss_func = torch.nn.BCEWithLogitsLoss()
+    if use_cuda:
+        model.cuda()
+        feats = feats.cuda()
+    labels = labels  # .float()
+    best_test_acc = 0
+    best_val_acc = 0
+    lbl = labels
+    warmStartEncoderTraining = False  # to do some iteration warmstarting the model by considering all losses with the same learning rates.
+    if warmStartEncoderTraining:
+        optimizer_init = torch.optim.Adam(model.classifier.parameters(), lr=lr, weight_decay=l2norm)
+        n_init_fine_epochs = 0  # int(n_fine_tune_epochs/2)
+        n_fine_tune_epochs = n_fine_tune_epochs - n_init_fine_epochs
+        print("warm start finetuning training...")
+        for epoch in range(n_init_fine_epochs):
+            model.classifier.train()
+            optimizer.zero_grad()
+            t0 = time.time()
+
+            logits = model.classifier.forward(feats)
+            if multilabel:
+                loss = loss_func(logits[train_idx].squeeze(1),
+                                 lbl[train_idx])
+            else:
+                loss = loss_func(logits[train_idx].squeeze(1), torch.max(lbl[train_idx], 1)[1])
+            loss.backward()
+            optimizer_init.step()
+
+            pred = torch.sigmoid(logits).detach().cpu().numpy()
+            train_acc = roc_auc_score(labels.cpu()[train_idx].numpy(),
+                                      pred[train_idx], average='macro')
+            val_acc = roc_auc_score(labels.cpu()[val_idx].numpy(),
+                                    pred[val_idx], average='macro')
+            test_acc = roc_auc_score(labels.cpu()[test_idx].numpy()
+                                     , pred[test_idx], average='macro')
+            test_acc_w = roc_auc_score(labels.cpu()[test_idx].numpy()
+                                       , pred[test_idx], average='weighted')
+
+            macro_test, micro_test = macro_micro_f1(
+                torch.max(labels[test_idx], 1)[1].cpu(), torch.max(logits[test_idx], 1)[1].cpu())
+
+            if best_val_acc < val_acc:
+                best_val_acc = val_acc
+                best_test_acc = test_acc
+
+            if epoch % 5 == 0:
+                print(
+                    'Loss %.4f, Train Acc %.4f, Val Acc %.4f (Best %.4f), Test Acc %.4f (Best %.4f), Weighted Test Acc %.4f' % (
+                        loss.item(),
+                        train_acc.item(),
+                        val_acc.item(),
+                        best_val_acc.item(),
+                        test_acc.item(),
+                        best_test_acc.item(), test_acc_w.item()
+                    ))
+        print()
+    adjust_pr_lr = False  # to add a slower learning rate for parameters of the model compared to decoder parameters.
+    if adjust_pr_lr:
+        cl_params = set(list(model.classifier.parameters()))
+        tot_params = set(list(model.parameters()))
+        res_params = list(tot_params.difference(cl_params))
+        optimizer = torch.optim.Adam([{'params': res_params},
+                                      {'params': model.classifier.parameters(), 'lr': lr}],
+                                     lr=lr / 10, weight_decay=l2norm)
+    else:
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=l2norm)
+    # training loop
+    print("start finetuning training...")
+    forward_time = []
+    backward_time = []
+    model.train()
+    dur = []
+    # cancel the link preidction and rw superivsion tasks since the batch graph sampled will not have
+    # connections among different nodes. Consider full graph sampling but evaluate only in the category node.
+    model.link_prediction_task = False
+    model.rw_supervision_task = False
+    for epoch in range(n_fine_tune_epochs):
+        model.train()
+        optimizer.zero_grad()
+        if epoch > 3:
+            t0 = time.time()
+
+        for i, (seeds, blocks) in enumerate(fine_tune_loader):
+            batch_tic = time.time()
+            # need to copy the features
+            for i in range(len(blocks)):
+                blocks[i] = blocks[i].to(device)
+            lbl = labels[seeds[category]]
+            logits = model.classifier_forward_mb(blocks)[category]
+            if multilabel:
+                log_loss = loss_func(logits.squeeze(1),
+                                     lbl)
+            else:
+                log_loss = loss_func(logits.squeeze(1), torch.max(lbl, 1)[1])
+            print("Log loss :" + str(log_loss.item()))
+            if only_ssl:
+                loss = log_loss
+            else:
+                if rw_supervision:
+                    st = time.time()
+                    rw_neighbors = generate_rwalks(g=train_g, metapaths=metapaths, samples_per_node=4,
+                                                   device=device)
+                    print('Sampling rw time: ' + str(time.time() - st))
+                else:
+                    rw_neighbors = None
+                pr_loss, universal_embeddings = model.forward_mb(p_blocks=blocks, rw_neighbors=rw_neighbors)
+                loss = pr_loss + log_loss
+            loss.backward()
+            optimizer.step()
+
+            train_acc = torch.sum(logits.argmax(dim=1) == lbl.argmax(dim=1)).item() / len(seeds[category])
+            pred = torch.sigmoid(logits).detach().cpu().numpy()
+            try:
+                train_acc_auc = roc_auc_score(lbl.cpu().numpy(), pred)
+            except ValueError:
+                train_acc_auc = -1
+            print(
+                "Epoch {:05d} | Batch {:03d} | Train Acc: {:.4f} |Train Acc AUC: {:.4f}| Train Loss: {:.4f} | Time: {:.4f}".
+                    format(epoch, i, train_acc, train_acc_auc, loss.item(), time.time() - batch_tic))
+
+        if epoch > 3:
+            dur.append(time.time() - t0)
+
+        val_loss, val_acc, val_acc_auc = evaluate_panrep_fn_for_node_classification \
+            (model, val_idx, val_blocks, device, labels, category, use_cuda, loss_func, multilabel=multilabel)
+        print("Epoch {:05d} | Valid Acc: {:.4f} |Valid Acc Auc: {:.4f} | Valid loss: {:.4f} | Time: {:.4f}".
+              format(epoch, val_acc, val_acc_auc, val_loss.item(), np.average(dur)))
+    print()
+    return backward_time, forward_time, labels, model
+
+
+
 def initiate_sampler(train_g,batch_size,args,evaluate_panrep =False):
     n_layers = args.n_layers
     fanout = args.fanout
@@ -310,13 +461,14 @@ def _fit(args):
     # sampler parameters
     batch_size = 16*1024
     l2norm=0.0001
+    eval_nc=labels is not None
+    svm_eval=True
+    eval_lp = args.test_edge_split > 0
 
     # check cuda
     use_cuda = args.gpu >= 0 and torch.cuda.is_available()
     if use_cuda:
         torch.cuda.set_device(args.gpu)
-
-
     device = torch.device("cuda:" + str(args.gpu) if use_cuda else "cpu")
     # create model
 
@@ -338,8 +490,7 @@ def _fit(args):
     evaluate_every = 20
     loader,valid_loader=initiate_sampler(train_g,batch_size,args,evaluate_panrep)
     # training loop
-    print("start training...")
-
+    print("start pretraining...")
     for epoch in range(n_epochs):
         model.train()
         rw_neighbors = generate_rwalks(g=train_g, metapaths=metapaths, samples_per_node=4, device=device,rw_supervision=rw_supervision)
@@ -347,33 +498,34 @@ def _fit(args):
         optimizer.zero_grad()
         for i, (seeds, blocks) in enumerate(loader):
 
-            loss, embeddings = model.forward_mb(p_blocks=blocks,rw_neighbors=rw_neighbors)
+            loss, universal_embeddings = model.forward_mb(p_blocks=blocks,rw_neighbors=rw_neighbors)
             loss.backward()
             optimizer.step()
 
             print("Train Loss: {:.4f} Epoch {:05d} | Batch {:03d}".format(loss.item(), epoch, i))
         if evaluate_panrep and epoch % evaluate_every == 0:
             eval_training_of_panrep(model=model, dataloader=valid_loader)
+    print("end pretraining...")
 
-
-    ## Evaluate before finetune
+    ## Obtain universal embeddings and evaluate
     model.eval()
     if use_cuda:
         model.cpu()
         model.encoder.cpu()
         train_g=train_g.to(torch.device("cpu"))
+
     with torch.no_grad():
-        embeddings = model.encoder.forward(train_g)
+        universal_embeddings = model.encoder.forward(train_g)
     if use_cuda:
         model.cuda()
         model.encoder.cuda()
         #train_g=train_g.to(device)
-    #calculate entropy
-    entropy = calculate_entropy(embeddings)
+    # calculate entropy
+    entropy = calculate_entropy(universal_embeddings)
     print("Entropy: "+str(entropy))
-    # evaluate link prediction
+    ## Evaluate link prediction and finetune for linkprediction
     pr_mrr="PanRep "
-    eval_lp=args.test_edge_split>0
+
     if eval_lp:
         if use_link_prediction:
             # Evaluated LP model in PanRep for link prediction
@@ -382,181 +534,32 @@ def _fit(args):
         # finetune PanRep for link prediction
         n_lp_fintune_epochs=n_epochs
         lr_lp_ft=lr
-        pr_mrr+=finetune_pr_for_link_prediction(train_g, test_g, train_edges, valid_edges, test_edges, model, batch_size,
-                                        n_hidden,  ng_rate, fanout, l2norm,
-                                        n_layers, n_lp_fintune_epochs, lr_lp_ft, use_cuda, device)
+        pr_mrr+=finetune_panrep_fn_for_link_prediction(train_g, test_g, train_edges, valid_edges, test_edges, model, batch_size,
+                                                       n_hidden, ng_rate, fanout, l2norm,
+                                                       n_layers, n_lp_fintune_epochs, lr_lp_ft, use_cuda, device)
 
-
-    eval_nc=True
-    svm_eval=True
-    if eval_nc and labels is not None:
+    if eval_nc:
         multilabel = True
-        feats = embeddings[category]
+        feats = universal_embeddings[category]
         labels_i=np.argmax(labels.cpu().numpy(),axis=1)
         lr_d=lr
         n_cepochs=600#n_epochs
+        ## Test universal embeddings by training mlp classifier for node classification
+
         test_acc_prembed = mlp_classifier(
             feats, use_cuda, n_hidden, lr_d, n_cepochs, multilabel, num_classes, labels, train_idx, val_idx, test_idx, device)
         svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std,macro_str,micro_str = evaluate_results_nc(
             feats[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
 
-        ## Finetune PanRep
-        # add the target category in the sampler
-        sampler = InfomaxNodeRecNeighborSampler(train_g, [fanout] * (n_layers), device=device,category=category)
-        fine_tune_loader = DataLoader(dataset=list(train_idx),
-                            batch_size=batch_size,
-                            collate_fn=sampler.sample_blocks,
-                            shuffle=True,
-                            num_workers=0)
-
-
-        # validation sampler
-        val_sampler = HeteroNeighborSampler(train_g, category, [fanout] * n_layers, True)
-        _, val_blocks = val_sampler.sample_blocks(val_idx)
-
-        # test sampler
-        test_sampler = HeteroNeighborSampler(train_g, category, [fanout] * n_layers, True)
-        _, test_blocks = test_sampler.sample_blocks(test_idx)
-        # set up fine_tune epochs
-        n_init_fine_epochs=0#int(n_fine_tune_epochs/2)
-        n_fine_tune_epochs=n_fine_tune_epochs-n_init_fine_epochs
-
-
-        # donwstream classifier
-
-        model.classifier=ClassifierMLP(input_size=n_hidden,hidden_size=n_hidden,out_size=num_classes,single_layer=single_layer)
-        if multilabel is False:
-            loss_func = torch.nn.CrossEntropyLoss()
-        else:
-            loss_func = torch.nn.BCEWithLogitsLoss()
-        if use_cuda:
-            model.cuda()
-            feats=feats.cuda()
-        labels=labels#.float()
-        best_test_acc=0
-        best_val_acc=0
-        #NodeClassifierRGCN(in_dim= n_hidden,out_dim=num_classes, rel_names=g.etypes,num_bases=n_bases)
-        optimizer_init = torch.optim.Adam(model.classifier.parameters(), lr=lr, weight_decay=l2norm)
-        lbl = labels
-        for epoch in range(n_init_fine_epochs):
-                model.classifier.train()
-                optimizer.zero_grad()
-                t0 = time.time()
-
-                logits = model.classifier.forward(feats)
-                if multilabel:
-                    loss = loss_func(logits[train_idx].squeeze(1),
-                                                              lbl[train_idx])
-                else:
-                    loss=loss_func(logits[train_idx].squeeze(1),torch.max(lbl[train_idx], 1)[1] )
-                loss.backward()
-                optimizer_init.step()
-
-                pred = torch.sigmoid(logits).detach().cpu().numpy()
-                train_acc = roc_auc_score(labels.cpu()[train_idx].numpy(),
-                                          pred[train_idx], average='macro')
-                val_acc = roc_auc_score(labels.cpu()[val_idx].numpy(),
-                                        pred[val_idx], average='macro')
-                test_acc = roc_auc_score(labels.cpu()[test_idx].numpy()
-                                         , pred[test_idx], average='macro')
-                test_acc_w = roc_auc_score(labels.cpu()[test_idx].numpy()
-                                           , pred[test_idx], average='weighted')
-
-                macro_test,micro_test= macro_micro_f1(
-                    torch.max(labels[test_idx], 1)[1].cpu(), torch.max(logits[test_idx], 1)[1].cpu())
-
-                if best_val_acc < val_acc:
-                    best_val_acc = val_acc
-                    best_test_acc = test_acc
-
-                if epoch % 5 == 0:
-                    print(
-                        'Loss %.4f, Train Acc %.4f, Val Acc %.4f (Best %.4f), Test Acc %.4f (Best %.4f), Weighted Test Acc %.4f' % (
-                            loss.item(),
-                            train_acc.item(),
-                            val_acc.item(),
-                            best_val_acc.item(),
-                            test_acc.item(),
-                            best_test_acc.item(), test_acc_w.item()
-                        ))
-        print()
-
-        adjust_pr_lr=False
-        if adjust_pr_lr:
-            cl_params = set(list(model.classifier.parameters()))
-            tot_params = set(list(model.parameters()))
-            res_params = list(tot_params.difference(cl_params))
-            optimizer = torch.optim.Adam([{'params':res_params},
-                                          {'params':model.classifier.parameters(), 'lr': lr}],
-                                         lr=lr/10, weight_decay=l2norm)
-        else:
-            optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=l2norm)
-        # training loop
-        print("start training...")
-        forward_time = []
-        backward_time = []
-        model.train()
-        dur = []
-
-        # cancel the link preidction and rw superivsion tasks since the batch graph sampled will not have
-        # connections among different nodes. Consider full graph sampling but evaluate only in the category node.
-        model.link_prediction_task=False
-        model.rw_supervision_task=False
-
-
-        for epoch in range(n_fine_tune_epochs):
-            model.train()
-            optimizer.zero_grad()
-            if epoch > 3:
-                t0 = time.time()
-
-            for i, (seeds, blocks) in enumerate(fine_tune_loader):
-                batch_tic = time.time()
-                # need to copy the features
-                for i in range(len(blocks)):
-                    blocks[i] = blocks[i].to(device)
-                #emb = extract_embed(node_embed, blocks[0])
-                lbl = labels[seeds[category]]
-                logits = model.classifier_forward_mb(blocks)[category]
-                if multilabel:
-                    log_loss = loss_func(logits.squeeze(1),
-                                     lbl)
-                else:
-                    log_loss = loss_func(logits.squeeze(1), torch.max(lbl, 1)[1])
-                print("Log loss :"+str(log_loss.item()))
-                if only_ssl:
-                    loss=log_loss
-                else:
-                    if rw_supervision:
-                        st = time.time()
-                        rw_neighbors = generate_rwalks(g=train_g, metapaths=metapaths, samples_per_node=4,
-                                                       device=device)
-                        print('Sampling rw time: ' + str(time.time() - st))
-                    else:
-                        rw_neighbors = None
-                    pr_loss, embeddings = model.forward_mb(p_blocks=blocks, rw_neighbors=rw_neighbors)
-                    loss=pr_loss+log_loss
-                loss.backward()
-                optimizer.step()
-
-                train_acc = torch.sum(logits.argmax(dim=1) == lbl.argmax(dim=1)).item() / len(seeds[category])
-                pred = torch.sigmoid(logits).detach().cpu().numpy()
-                try:
-                    train_acc_auc = roc_auc_score(lbl.cpu().numpy(), pred)
-                except ValueError:
-                    train_acc_auc=-1
-                print(
-                    "Epoch {:05d} | Batch {:03d} | Train Acc: {:.4f} |Train Acc AUC: {:.4f}| Train Loss: {:.4f} | Time: {:.4f}".
-                    format(epoch, i, train_acc, train_acc_auc, loss.item(), time.time() - batch_tic))
-
-            if epoch > 3:
-                dur.append(time.time() - t0)
-
-            val_loss, val_acc,val_acc_auc = evaluate_prfin_for_node_classification\
-                (model, val_idx, val_blocks, device, labels, category, use_cuda,loss_func, multilabel=multilabel)
-            print("Epoch {:05d} | Valid Acc: {:.4f} |Valid Acc Auc: {:.4f} | Valid loss: {:.4f} | Time: {:.4f}".
-                  format(epoch, val_acc, val_acc_auc,val_loss.item(), np.average(dur)))
-        print()
+        ## Finetune PanRep for node classification
+        backward_time, forward_time, labels, model = finetune_panrep_for_node_classification(batch_size, category, device,
+                                                                                      fanout, feats, l2norm, labels, lr,
+                                                                                      metapaths, model, multilabel,
+                                                                                      n_fine_tune_epochs, n_hidden,
+                                                                                      n_layers, num_classes, only_ssl,
+                                                                                      optimizer, rw_supervision,
+                                                                                      single_layer, test_idx, train_g,
+                                                                                      train_idx, use_cuda, val_idx)
 
         # full graph evaluation here
         model.eval()
@@ -565,7 +568,7 @@ def _fit(args):
             model.encoder.cpu()
             train_g=train_g.to(torch.device("cpu"))
         with torch.no_grad():
-            embeddings = model.encoder.forward(train_g)
+            universal_embeddings = model.encoder.forward(train_g)
             logits=model.classifier_forward(train_g)[category]
 
         acc = torch.sum(logits[test_idx].argmax(dim=1) == labels[test_idx].cpu().argmax(dim=1)).item() / len(test_idx)
@@ -575,7 +578,8 @@ def _fit(args):
         print("Mean forward time: {:4f}".format(np.mean(forward_time[len(forward_time) // 4:])))
         print("Mean backward time: {:4f}".format(np.mean(backward_time[len(backward_time) // 4:])))
 
-        feats = embeddings[category]
+        feats = universal_embeddings[category]
+        ## Test finetuned embeddings by training an mlp classifier
         test_acc_ftembed= mlp_classifier(
             feats, use_cuda, n_hidden, lr_d, n_cepochs, multilabel, num_classes, labels, train_idx, val_idx, test_idx, device)
         labels_i=np.argmax(labels.cpu().numpy(),axis=1)
@@ -594,8 +598,8 @@ def _fit(args):
         "| Finetune "+finmacro_str+" "+finmicro_str+"PR MRR : "+pr_mrr+" Logits: "+macro_str_log+" "+\
                micro_str_log +" Entropy "+ str(entropy) + " Test acc PR embed "+str(test_acc_prembed)+\
                " Test acc PRft embed "+str(test_acc_ftembed)
-    else:
-        return"PR MRR : " + pr_mrr + " Entropy " + str(entropy)
+    return "PR MRR : " + pr_mrr + " Entropy " + str(entropy)
+
 
 
 def fit(args):
