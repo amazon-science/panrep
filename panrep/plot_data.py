@@ -1,3 +1,7 @@
+'''
+This file contains functions used to plot the data
+'''
+
 import pickle
 import numpy as np
 from matplotlib import pyplot as plt

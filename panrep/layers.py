@@ -1,3 +1,8 @@
+'''
+This file contains the definition for different layers used in the GNN models.
+
+'''
+
 import torch
 from dgl import function as fn
 from torch import nn as nn

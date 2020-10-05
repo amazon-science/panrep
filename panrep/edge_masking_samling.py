@@ -1,3 +1,8 @@
+'''
+This file contains function that are used in masking the edges in the graph for link prediction training.
+
+'''
+
 import torch
 import numpy as np
 import time

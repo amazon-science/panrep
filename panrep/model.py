@@ -1,3 +1,8 @@
+'''
+This file contains the PanRep model.
+
+'''
+
 import torch.nn as nn
 import torch as th
 import dgl.function as fn

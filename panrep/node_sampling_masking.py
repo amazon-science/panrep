@@ -1,3 +1,8 @@
+'''
+This file contains functions to sample nodes and mask node attributes.
+
+'''
+
 import random
 import copy
 import torch

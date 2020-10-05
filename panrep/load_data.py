@@ -1,3 +1,7 @@
+'''
+This file contains functions that help loading the different datasets in the required format.
+'''
+
 import os
 import pickle
 import random

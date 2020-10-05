@@ -1,3 +1,7 @@
+'''
+This file contains the implementation of the decoders used to supervise PanRep.
+'''
+
 import torch.nn.functional as F
 import torch.nn as nn
 import torch

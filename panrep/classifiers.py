@@ -1,9 +1,14 @@
-from base_models import BaseRGCN
+'''
+This file contains different models for downstream tasks such as link prediction and node classification
+
+'''
+
+from old_files_.base_models import BaseRGCN
 from dgl.nn.pytorch import RelGraphConv
 from functools import partial
 import torch
 import torch.nn as nn
-from layers import RelGraphConvHetero, EmbeddingLayer,MiniBatchRelGraphConvHetero,MiniBatchRelGraphEmbed
+from layers import RelGraphConvHetero, MiniBatchRelGraphConvHetero,MiniBatchRelGraphEmbed
 import torch.nn.functional as F
 
 

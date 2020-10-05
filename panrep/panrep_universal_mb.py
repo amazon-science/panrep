@@ -4,9 +4,8 @@ Paper:
 Code:
 
 """
-from link_prediction_evaluation import evaluation_link_prediction, \
-    direct_eval_lppr_link_prediction
-from node_classification_evaluation import macro_micro_f1, evaluate_results_nc, mlp_classifier
+from evaluation import evaluation_link_prediction, \
+    direct_eval_lppr_link_prediction, macro_micro_f1, evaluate_results_nc, mlp_classifier
 from node_sampling_masking import  HeteroNeighborSampler,InfomaxNodeRecNeighborSampler
 import os
 from utils import calculate_entropy

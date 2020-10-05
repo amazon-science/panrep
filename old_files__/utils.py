@@ -1,8 +1,5 @@
 """
 Utility functions for link prediction
-Most code is adapted from authors' implementation of RGCN link prediction:
-https://github.com/MichSchli/RelationPrediction
-
 """
 
 import numpy as np
