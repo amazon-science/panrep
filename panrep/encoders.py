@@ -131,7 +131,7 @@ class EncoderRelGraphConvHetero(nn.Module):
         else:
             g = G
 
-        h_d = self.embed_layer(g,full=True)
+        h = self.embed_layer(g,full=True)
 
         for layer in self.layers:
             h = layer(g, h)

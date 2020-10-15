@@ -607,7 +607,7 @@ def fit(args):
         args.splitpct = 0.06401
         n_epochs_list = [300,500]#[250,300]
         n_hidden_list =[200,300]#[40,200,400]
-        n_layers_list = [1]
+        n_layers_list = [2]
         n_fine_tune_epochs_list= [140]#[20,50]#[30,50,150]
         n_bases_list = [5,10]
         lr_list = [1e-3]
