@@ -5,10 +5,15 @@ This file contains functions that help loading the different datasets in the req
 import os
 import pickle
 import random
+from os import listdir
 from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit
 import dgl
+import scipy.io
+import urllib.request
 import numpy as np
+import scipy.sparse as sp
 import torch
+#from aux_files.DistDGL.DistDGL.python.dgl.data import OAGDataset
 from dgl.contrib.data import load_data
 from sklearn.model_selection import StratifiedShuffleSplit,train_test_split
 from statistics import median
@@ -66,6 +71,12 @@ def load_univ_hetero_data(args):
     if args.dataset == "imdb_preprocessed":
         train_idx,test_idx,val_idx,labels,category,num_classes,featless_node_types,rw_neighbors,\
             train_edges, test_edges, valid_edges, train_g, valid_g, test_g= load_imdb_univ_preprocessed_data(args)
+    elif args.dataset == "acm":
+        train_idx, test_idx, val_idx, labels, category, num_classes, featless_node_types, rw_neighbors, \
+        train_edges, test_edges, valid_edges, train_g, valid_g, test_g = load_acm_univ_data(args)
+    elif args.dataset == "oag_full":
+        train_idx, test_idx, val_idx, labels, category, num_classes, featless_node_types, rw_neighbors, \
+        train_edges, test_edges, valid_edges, train_g, valid_g, test_g = load_oag_full_univ_data(args)
     elif args.dataset == "oag":
         train_idx, test_idx, val_idx, labels, category, num_classes, featless_node_types, rw_neighbors, \
         train_edges, test_edges, valid_edges, train_g, valid_g, test_g = load_oag_univ_preprocessed_data(args)
@@ -1342,6 +1353,119 @@ def load_oag_na_univ_preprocessed_data(args):
     return  train_idx,test_idx,val_idx,labels,category,num_classes,featless_node_types,metapaths,\
             train_edges, test_edges, valid_edges, train_g, valid_g, test_g
 
+def load_oag_full_univ_data(args):
+    #OAGData=OAGDataset.load()
+    #OAGData
+    return
+
+def load_acm_univ_data(args):
+    use_cuda = args.gpu
+    check_cuda = torch.cuda.is_available()
+    if use_cuda < 0:
+        check_cuda = False;
+    device = torch.device("cuda:" + str(use_cuda) if check_cuda else "cpu")
+    print("Using device", device)
+    cpu_device = torch.device("cpu");
+
+    seed = 0;
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.manual_seed(0)
+    data_url = 'https://s3.us-east-2.amazonaws.com/dgl.ai/dataset/ACM.mat'
+    data_folder = '../data/acm/'
+    data_file_path = '../data/acm/ACM.mat'
+
+    #urllib.request.urlretrieve(data_url, data_file_path)
+    data = scipy.io.loadmat(data_file_path)
+
+    G = dgl.heterograph({
+        ('paper', 'written-by', 'author'): data['PvsA'].nonzero(),
+        ('author', 'writing', 'paper'): data['PvsA'].transpose().nonzero(),
+        ('paper', 'citing', 'paper'): data['PvsP'].nonzero(),
+        ('paper', 'cited', 'paper'): data['PvsP'].transpose().nonzero(),
+        ('paper', 'is-about', 'subject'): data['PvsL'].nonzero(),
+        ('subject', 'has', 'paper'): data['PvsL'].transpose().nonzero(),
+    })
+    print(G)
+
+    pvc = data['PvsC'].tocsr()
+    p_selected = pvc.tocoo()
+    # generate labels
+    labels = pvc.indices
+    labels = torch.tensor(labels).long()
+
+    # generate train/val/test split
+    pid = p_selected.row
+    shuffle = np.random.permutation(pid)
+    train_idx = torch.tensor(shuffle[0:800]).long()
+    val_idx = torch.tensor(shuffle[800:900]).long()
+    test_idx = torch.tensor(shuffle[900:]).long()
+
+    for ntype in G.ntypes:
+        emb = torch.nn.Parameter(torch.Tensor(G.number_of_nodes(ntype), 256), requires_grad=False)
+        torch.nn.init.xavier_uniform_(emb)
+        G.nodes[ntype].data['h_f'] = emb
+
+    train_g, valid_g, test_g, train_edges, valid_edges, test_edges = create_edge_graph_splits(G,
+                                                                                              0.975 - args.test_edge_split,
+                                                                                              0.025,
+                                                                                              data_folder)
+    if args.use_node_motifs:
+        node_motifs = pickle.load(open(os.path.join(data_folder, 'node_motifs.pickle'), "rb"))
+        for ntype in G.ntypes:
+            G.nodes[ntype].data['motifs'] = node_motifs[ntype].float()
+        G = keep_frequent_motifs(G)
+        G = motif_distribution_to_zero_one(G, args)
+        for ntype in G.ntypes:
+            train_g.nodes[ntype].data['motifs'] = G.nodes[ntype].data['motifs']
+            valid_g.nodes[ntype].data['motifs'] = G.nodes[ntype].data['motifs']
+            test_g.nodes[ntype].data['motifs'] = G.nodes[ntype].data['motifs']
+
+    metapaths = {}
+    if args.rw_supervision:
+        '''
+            TODO add metapaths
+        '''
+
+
+    train_idx, val_idx, test_idx = create_label_split(labels.shape[0], args.splitpct,val_pct=0.00801)
+    print(G)
+
+    print(labels)
+
+    train_idx = np.array(train_idx)
+    test_idx = np.array(test_idx)
+    val_idx = np.array(val_idx)
+    category = 'paper'
+    num_classes = 13
+    if num_classes > 1:
+        labels_n = torch.zeros((np.shape(labels)[0], num_classes))
+
+        for i in range(np.shape(labels)[0]):
+            labels_n[i, int(labels[i]) if int(labels[i]) < 6 else int(labels[i])-1] = 1
+    else:
+        labels_n = labels
+
+    labels = labels_n
+    num_classes=13
+    featless_node_types = []
+
+    if args.use_cluster:
+        for ntype in G.ntypes:
+            if G.nodes[ntype].data.get("h_f", None) is not None:
+                G.nodes[ntype].data['h_clusters'] = compute_cluster_assignemnts(G.nodes[ntype].data['h_f'],
+                                                                                cluster_number=args.num_clusters)
+                train_g.nodes[ntype].data['h_clusters'] = G.nodes[ntype].data['h_clusters']
+                valid_g.nodes[ntype].data['h_clusters'] = G.nodes[ntype].data['h_clusters']
+                test_g.nodes[ntype].data['h_clusters'] = G.nodes[ntype].data['h_clusters']
+    return train_idx, test_idx, val_idx, labels, category, num_classes, featless_node_types, metapaths, \
+           train_edges, test_edges, valid_edges, train_g, valid_g, test_g
+
+
 def load_imdb_univ_preprocessed_data(args):
     use_cuda = args.gpu
     check_cuda = torch.cuda.is_available()
@@ -1367,19 +1491,17 @@ def load_imdb_univ_preprocessed_data(args):
 
     # In[13]:
     # load to cpu for very large graphs
-    if args.few_shot:
-        edge_list = pickle.load(open(os.path.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
-        G = dgl.heterograph(edge_list)
-    else:
-        edge_list = pickle.load(open(os.path.join(data_folder, 'edge_list.pickle'), "rb"))
-        G = dgl.heterograph(edge_list)
+    #if args.few_shot:
+    #    edge_list = pickle.load(open(os.path.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
+    #    G = dgl.heterograph(edge_list)
+    edge_list = pickle.load(open(os.path.join(data_folder, 'edge_list.pickle'), "rb"))
+    G = dgl.heterograph(edge_list)
     features = pickle.load(open(os.path.join(data_folder, 'features.pickle'), "rb"))
     for ntype in features.keys():
         G.nodes[ntype].data['h_f'] = features[ntype]
-    if args.few_shot:
-        train_g, valid_g, test_g, train_edges, valid_edges, test_edges = create_edge_few_shot_splits(G,data_folder,etype=['Drama_directed_by','directed_Drama'], K=args.k_shot_edge)
-    else:
-        train_g, valid_g, test_g, train_edges, valid_edges, test_edges = create_edge_graph_splits(G, 0.975-args.test_edge_split,
+    #if args.few_shot:
+    #    train_g, valid_g, test_g, train_edges, valid_edges, test_edges = create_edge_few_shot_splits(G,data_folder,etype=['Drama_directed_by','directed_Drama'], K=args.k_shot_edge)
+    train_g, valid_g, test_g, train_edges, valid_edges, test_edges = create_edge_graph_splits(G, 0.975-args.test_edge_split,
                                                                                                   0.025,
                                                                                                   data_folder)
 

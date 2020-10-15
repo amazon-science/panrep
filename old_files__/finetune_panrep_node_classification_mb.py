@@ -180,7 +180,7 @@ def _fit(n_epochs,n_fine_tune_epochs, n_layers, n_hidden, n_bases, fanout, lr, d
                              link_predictor=link_predictor,
                              out_motif_dict=out_motif_dict,
                              use_cluster=num_cluster>0,
-                             single_layer=single_layer,
+                             single_layer_clusterandrecover_decoder=single_layer,
                              use_cuda=use_cuda,
                              metapathRWSupervision=metapathRWSupervision)
 

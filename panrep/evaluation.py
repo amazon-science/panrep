@@ -965,14 +965,37 @@ def mlp_classifier(feats,use_cuda,n_hidden,lr_d,n_cepochs,multilabel,num_classes
         optimizer.step()
         pred = torch.sigmoid(logits).detach().cpu().numpy()
 
-        train_acc = roc_auc_score(labels_n.cpu()[train_indices.cpu()].numpy(),
-                                  pred[train_indices.cpu()],average='macro')
-        val_acc = roc_auc_score(labels_n.cpu()[valid_indices.cpu()].numpy(),
-                                pred[valid_indices.cpu()],average='macro')
-        test_acc = roc_auc_score(labels_n.cpu()[test_indices.cpu()].numpy()
-                                 , pred[test_indices.cpu()],average='macro')
-        test_acc_w = roc_auc_score(labels_n.cpu()[test_indices.cpu()].numpy()
-                                 , pred[test_indices.cpu()], average='weighted')
+        try:
+                train_auc_acc = roc_auc_score(labels_n.cpu()[train_indices.cpu()].numpy(),
+                                          pred[train_indices.cpu()], average='macro')
+        except ValueError:
+                train_auc_acc=0
+                pass
+        try:
+                val_auc_acc = roc_auc_score(labels_n.cpu()[valid_indices.cpu()].numpy(),
+                                        pred[valid_indices.cpu()], average='macro')
+        except ValueError:
+                val_auc_acc=0
+                pass
+        try:
+                test_auc_acc = roc_auc_score(labels_n.cpu()[test_indices.cpu()].numpy()
+                                         , pred[test_indices.cpu()], average='macro')
+        except ValueError:
+                test_auc_acc=0
+                pass
+        try:
+                test_auc_acc_w = roc_auc_score(labels_n.cpu()[test_indices.cpu()].numpy()
+                                           , pred[test_indices.cpu()], average='weighted')
+        except ValueError:
+                test_auc_acc_w=0
+                pass
+        pred = logits.argmax(1).cpu()
+        labels_l = labels.argmax(1).cpu()
+        train_acc = (pred[train_indices.cpu()] == labels_l[train_indices.cpu()]).float().mean()
+        val_acc = (pred[valid_indices.cpu()] == labels_l[valid_indices.cpu()]).float().mean()
+        test_acc = (pred[test_indices.cpu()] == labels_l[test_indices.cpu()]).float().mean()
+        test_acc_w = 0
+
         macro_test, micro_test = macro_micro_f1(
             torch.max(labels[test_indices], 1)[1].cpu(), torch.max(logits[test_indices], 1)[1].cpu())
         if best_val_acc < val_acc:
@@ -982,11 +1005,12 @@ def mlp_classifier(feats,use_cuda,n_hidden,lr_d,n_cepochs,multilabel,num_classes
         if epoch % 5 == 0:
             print('Loss %.4f, Train Acc %.4f, Val Acc %.4f (Best %.4f), Test Acc %.4f (Best %.4f), Weighted Test Acc %.4f' % (
                 loss.item(),
-                train_acc.item(),
-                val_acc.item(),
-                best_val_acc.item(),
-                test_acc.item(),
-                best_test_acc.item(),test_acc_w.item()
+                train_acc.item() if th.is_tensor(train_acc) else train_acc,
+                val_acc.item()if th.is_tensor(val_acc) else val_acc,
+                best_val_acc.item()if th.is_tensor(best_val_acc) else best_val_acc,
+                test_acc.item()if th.is_tensor(test_acc) else test_acc,
+                best_test_acc.item()if th.is_tensor(best_test_acc) else best_test_acc,test_acc_w.item()
+                if th.is_tensor(test_acc_w) else test_acc_w
             ))
     print()
     return best_test_acc

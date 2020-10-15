@@ -187,7 +187,7 @@ def _fit(n_epochs, n_layers, n_hidden, n_bases, fanout, lr, dropout,use_link_pre
                              link_prediction_task=link_prediction,
                              out_motif_dict=out_motif_dict,
                              use_cluster=num_cluster>0,
-                             single_layer=single_layer,
+                             single_layer_clusterandrecover_decoder=single_layer,
                              use_cuda=use_cuda,
                              metapathRWSupervision=metapathRWSupervision)
 

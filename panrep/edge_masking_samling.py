@@ -1,5 +1,5 @@
 '''
-This file contains function that are used in masking the edges in the graph for link prediction training.
+This file contains functions that are used in masking the edges in the graph for link prediction training.
 
 '''
 
