@@ -11,3 +11,11 @@ More details of PanRep can be found in this [paper](https://arxiv.org/pdf/2007.1
     journal={arXiv preprint arXiv:2007.10445}
 }
 ```
+
+## Security
+
+See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
+
+## License
+
+This project is licensed under the Apache-2.0 License.
