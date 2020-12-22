@@ -23,7 +23,8 @@ from load_data import load_univ_hetero_data,generate_rwalks
 from model import PanRepHetero
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader
-from node_supervision_tasks import MetapathRWalkerSupervision, LinkPredictor,LinkPredictorLearnableEmbed
+from node_supervision_tasks import MetapathRWalkerSupervision, \
+    LinkPredictor,LinkPredictorLearnableEmbed, MutualInformationDiscriminator,NodeMotifDecoder,MultipleAttributeDecoder
 from encoders import EncoderRelGraphConvHetero,EncoderHGT
 
 
@@ -126,7 +127,6 @@ def eval_training_of_panrep(model, dataloader):
     return
 
 def initiate_model(args,masked_node_types,train_g):
-    # for the embedding layer
     rw_supervision = args.rw_supervision
     n_layers = args.n_layers
     use_clusterandrecover_loss = args.use_clusterandrecover_loss
@@ -173,6 +173,7 @@ def initiate_model(args,masked_node_types,train_g):
                                   dropout=dropout,
                                   use_self_loop=use_self_loop)
     elif args.encoder=="HGT":
+        raise ValueError('Not implemented')
         node_dict = {}
         edge_dict = {}
         for ntype in train_g.ntypes:
@@ -188,7 +189,7 @@ def initiate_model(args,masked_node_types,train_g):
                     n_layers=2,
                     n_heads=4,
                     use_norm=True).to(device)
-
+    decoders={}
     if rw_supervision:
         mrw_interact = {}
         for ntype in train_g.ntypes:
@@ -197,40 +198,40 @@ def initiate_model(args,masked_node_types,train_g):
                 mrw_interact[ntype] +=[neighbor_ntype]
 
         metapathRWSupervision = MetapathRWalkerSupervision(in_dim=n_hidden, negative_rate=args.negative_rate_rw,
-                                                           device=device,mrw_interact=mrw_interact)
-    else:
-        metapathRWSupervision=None
+                                                           device=device,mrw_interact=mrw_interact).to(device)
+        decoders['mrwd']=metapathRWSupervision
 
-    link_predictor = None
     learn_rel_embed=False
     if use_link_prediction:
         if learn_rel_embed:
             link_predictor = LinkPredictorLearnableEmbed(out_dim=n_hidden, etypes=train_g.etypes,
-                                      ntype2id=ntype2id, use_cuda=use_cuda,edg_pct=1,negative_rate_lp=negative_rate_lp)
+                                      ntype2id=ntype2id, use_cuda=use_cuda,edg_pct=1,negative_rate_lp=negative_rate_lp).to(device)
         else:
             link_predictor = LinkPredictor(out_dim=n_hidden, etypes=train_g.etypes,
                                                          ntype2id=ntype2id, use_cuda=use_cuda, edg_pct=1,
-                                                         ng_rate=negative_rate_lp)
-    loss_over_all_nodes = True
+                                                       ng_rate=negative_rate_lp).to(device)
+        decoders['lpd']=link_predictor
+    if use_infomax_loss:
+        mutIndDisc=MutualInformationDiscriminator(n_hidden=n_hidden).to(device)
+        decoders['mid']=mutIndDisc
+    if use_node_motif:
+        nodeMotifDecoder=NodeMotifDecoder(in_dim=n_hidden, h_dim=n_hidden, out_dict=out_motif_dict).to(device)
+        decoders['nmd']=nodeMotifDecoder
+    if use_clusterandrecover_loss:
+        attributeDecoder = MultipleAttributeDecoder(
+            out_size_dict=out_size_dict, in_size=n_hidden,
+            h_dim=n_hidden, masked_node_types=masked_node_types,
+            loss_over_all_nodes=True, single_layer=False,
+            use_cluster=num_cluster>0).to(device)
+        decoders['crd']=attributeDecoder
+
     model = PanRepHetero(n_hidden,
                          n_hidden,
-                         etypes=train_g.etypes,
                          encoder=encoder,
-                         ntype2id=ntype2id,
+                         decoders=decoders,
                          num_hidden_layers=n_layers,
                          dropout=dropout,
-                         out_size_dict=out_size_dict,
-                         masked_node_types=masked_node_types,
-                         loss_over_all_nodes=loss_over_all_nodes,
-                         use_infomax_task=use_infomax_loss,
-                         use_reconstruction_task=use_clusterandrecover_loss,
-                         use_node_motif=use_node_motif,
-                         link_predictor=link_predictor,
-                         out_motif_dict=out_motif_dict,
-                         use_cluster=num_cluster>0,
-                         single_layer_clusterandrecover_decoder=False,
-                         use_cuda=use_cuda,
-                         metapathRWSupervision=metapathRWSupervision)
+                         use_cuda=use_cuda)
     return model
 def finetune_panrep_for_node_classification(batch_size, category, device, fanout, feats, l2norm, labels, lr, metapaths,
                                             model, multilabel, n_fine_tune_epochs, n_hidden, n_layers, num_classes,
@@ -442,10 +443,10 @@ def _fit(args):
     if rw_supervision and n_layers==1:
         return ""
     if num_cluster>0:
-        args.use_cluster=True
+        args.use_clusterandrecover_loss=True
         args.num_clusters=num_cluster
     else:
-        args.use_cluster = False
+        args.use_clusterandrecover_loss = False
     if args.dataset=="query_biodata":
         if use_clusterandrecover_loss:
             return ""
@@ -605,21 +606,21 @@ def fit(args):
             best results 700 hidden units so far
         '''
         args.splitpct = 0.06401
-        n_epochs_list = [300,500]#[250,300]
+        n_epochs_list = [2,500]#[250,300]
         n_hidden_list =[200,300]#[40,200,400]
         n_layers_list = [2]
         n_fine_tune_epochs_list= [140]#[20,50]#[30,50,150]
         n_bases_list = [5,10]
         lr_list = [1e-3]
         dropout_list = [0.1]
-        fanout_list = [None]
+        fanout_list = []
         test_edge_split_list = [-0.025]
         use_link_prediction_list = [True]
-        use_clusterandrecover_loss_list =[False]#[False,True]
+        use_clusterandrecover_loss_list =[True]#[False,True]
         use_infomax_loss_list =[True]#[False,True]
         use_node_motif_list = [False]
         rw_supervision_list=[False]
-        num_cluster_list=[0]
+        num_cluster_list=[5]
         K_list=[0]#[2,5,10,15]
         motif_cluster_list=[5]#[2,6,10]
         use_self_loop_list=[True]
@@ -652,7 +653,7 @@ def fit(args):
                                                                                                     and not use_node_motif and not rw_supervision:
                                                                                                 continue
                                                                                             else:
-                                                                                                fanout=None
+                                                                                                fanout=10
                                                                                                 args.rw_supervision = rw_supervision
                                                                                                 args.n_layers = n_layers
                                                                                                 args.use_clusterandrecover_loss = use_clusterandrecover_loss
@@ -763,7 +764,7 @@ if __name__ == '__main__':
                        help="use only a single layer for the decoder for the semi-supervised loss.")
     parser.add_argument("--use-node-motifs", default=True, action='store_true',
                        help="use the node motifs")
-    parser.add_argument("--batch-size", type=int, default=5000,
+    parser.add_argument("--batch-size", type=int, default=500,
             help="Mini-batch size. If -1, use full graph training.")
     parser.add_argument("--model_path", type=str, default=None,
             help='path for save the model')
@@ -776,7 +777,9 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'acm','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'ogbn-mag','--encoder', 'RGCN'])
+
+
     print(args)
     args.bfs_level = args.n_layers + 1 # pruning used nodes for memory
     fit(args)
