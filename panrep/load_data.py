@@ -72,6 +72,7 @@ def load_hetero_data(args):
         raise NotImplementedError
     return train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types,rw_neighbors
 def load_univ_hetero_data(args):
+    multilabel=False
     if args.dataset == "imdb_preprocessed":
         train_idx,test_idx,val_idx,labels,category,num_classes,featless_node_types,rw_neighbors,\
             train_edges, test_edges, valid_edges, train_g, valid_g, test_g= load_imdb_univ_preprocessed_data(args)
@@ -110,7 +111,7 @@ def load_univ_hetero_data(args):
         val_idx = np.array(list(set(val_idx).difference(set(zero_rows))))
         test_idx = np.array(list(set(test_idx).difference(set(zero_rows))))
     return train_idx,test_idx,val_idx,labels,category,num_classes,featless_node_types,rw_neighbors,\
-            train_edges, test_edges, valid_edges, train_g, valid_g, test_g
+            train_edges, test_edges, valid_edges, train_g, valid_g, test_g,multilabel
 
 
 
@@ -1447,13 +1448,14 @@ def load_ogbn_mag_full_univ_data(args):
         test_idx = np.array(test_idx)
         val_idx = np.array(val_idx)
         num_classes = 349
-        if num_classes > 1:
+        multilabel=False
+        if multilabel:
             labels_n = torch.zeros((np.shape(labels)[0], num_classes))
 
             for i in range(np.shape(labels)[0]):
                 labels_n[i, int(labels[i]) if int(labels[i]) < 6 else int(labels[i]) - 1] = 1
         else:
-            labels_n = labels
+            labels_n = torch.tensor(labels)
 
         labels = labels_n
         featless_node_types = []
@@ -1667,13 +1669,14 @@ def load_imdb_univ_preprocessed_data(args):
     val_idx = np.array(val_idx)
     category = 'movie'
     num_classes = 3
-    if num_classes > 1:
+    multilabel=False
+    if multilabel:
         labels_n = torch.zeros((np.shape(labels)[0], num_classes))
 
         for i in range(np.shape(labels)[0]):
             labels_n[i, int(labels[i])] = 1
     else:
-        labels_n = labels
+        labels_n = torch.tensor(labels)
     labels = labels_n
     featless_node_types = []
     if args.use_clusterandrecover_loss:

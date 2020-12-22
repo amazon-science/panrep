@@ -63,26 +63,37 @@ class ClassifierMLP(torch.nn.Module):
         super(ClassifierMLP, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
-        self.out_size=out_size
-        self.single_layer=single_layer
-        if self.single_layer:
-            self.fc1 = torch.nn.Linear(self.input_size, self.out_size)
+        self.out_size = out_size
+        super().__init__()
+        if single_layer:
+            self.model = nn.Sequential(
+                # nn.Dropout(dropout),
+                nn.Linear(input_size, hidden_size),
+                nn.ReLU(),
+                # nn.BatchNorm1d(hidden_size),
+                # nn.Dropout(dropout),
+                nn.Linear(hidden_size, out_size),
+                nn.ReLU()
+            )
         else:
-            self.fc1 = torch.nn.Linear(self.input_size, self.hidden_size)
-            self.relu = torch.nn.ReLU()
-            self.fc2 = torch.nn.Linear(self.hidden_size, self.out_size)
-        self.activation=partial(F.softmax, dim=1)
-        #self.sigmoid = torch.nn.Sigmoid()
+            self.model = nn.Sequential(
+                # nn.Dropout(dropout),
+                nn.Linear(input_size, hidden_size),
+                nn.ReLU(),
+                # nn.BatchNorm1d(hidden_size),
+                # nn.Dropout(dropout),
+                nn.Linear(hidden_size, hidden_size),
+                nn.ReLU(),
+                # nn.BatchNorm1d(hidden_size ),
+                # nn.Dropout(dropout),
+                nn.Linear(hidden_size, out_size),
+                nn.ReLU()
+            )
 
     def forward(self, x):
-        if self.single_layer:
-            output=self.fc1(x)
-        else:
-            hidden = self.fc1(x)
-            relu = self.relu(hidden)
-            output = self.fc2(relu)
-        #output=self.activation(output)
-        return output
+
+        return self.model(x)
+
 class ClassifierRGCN(BaseRGCN):
     def create_features(self):
         features = torch.arange(self.num_nodes)
