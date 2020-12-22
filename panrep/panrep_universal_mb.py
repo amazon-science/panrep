@@ -5,7 +5,8 @@ Code:
 
 """
 from evaluation import evaluation_link_prediction, \
-    direct_eval_lppr_link_prediction, macro_micro_f1, evaluate_results_nc, mlp_classifier,compute_acc
+    direct_eval_lppr_link_prediction, macro_micro_f1, evaluate_results_nc, \
+    mlp_classifier,compute_acc,evaluate_panrep_fn_for_node_classification
 from node_sampling_masking import  HeteroNeighborSampler,InfomaxNodeRecNeighborSampler
 import os
 from utils import calculate_entropy
@@ -27,29 +28,6 @@ from node_supervision_tasks import MetapathRWalkerSupervision, \
     LinkPredictor,LinkPredictorLearnableEmbed, MutualInformationDiscriminator,NodeMotifDecoder,MultipleAttributeDecoder
 from encoders import EncoderRelGraphConvHetero,EncoderHGT
 
-
-def evaluate_panrep_fn_for_node_classification(model, seeds, blocks, device, labels, category, use_cuda, loss_func, multilabel=False):
-    model.eval()
-    lbl = labels[seeds]
-    if use_cuda:
-        lbl = lbl.cuda()
-        for i in range(len(blocks)):
-            blocks[i] = blocks[i].to(device)
-    logits = model.classifier_forward_mb(blocks)[category]
-    loss = loss_func(logits, lbl)
-    pred = torch.sigmoid(logits)
-    if multilabel is False:
-        pred = pred.argmax(dim=1)
-    else:
-        pred = pred
-    acc = compute_acc(pred, lbl, multilabel)
-    pred = pred.cpu().numpy()
-    try:
-        acc_auc = roc_auc_score(lbl.cpu().numpy(), pred)
-    except ValueError:
-        acc_auc = -1
-        pass
-    return loss, acc,acc_auc
 
 
 def finetune_panrep_fn_for_link_prediction(train_g, test_g, train_edges, valid_edges, test_edges, model, batch_size,
@@ -245,10 +223,20 @@ def finetune_panrep_for_node_classification(batch_size, category, device, fanout
                                   num_workers=0)
     # validation sampler
     val_sampler = HeteroNeighborSampler(train_g, category, [fanout] * n_layers, True)
-    _, val_blocks = val_sampler.sample_blocks(val_idx)
+    #_, val_blocks = val_sampler.sample_blocks(val_idx)
+    val_loader = DataLoader(dataset=list(val_idx),
+                                  batch_size=batch_size,
+                                  collate_fn=val_sampler.sample_blocks,
+                                  shuffle=True,
+                                  num_workers=0)
     # test sampler
     test_sampler = HeteroNeighborSampler(train_g, category, [fanout] * n_layers, True)
-    _, test_blocks = test_sampler.sample_blocks(test_idx)
+    #_, test_blocks = test_sampler.sample_blocks(test_idx)
+    test_loader = DataLoader(dataset=list(test_idx),
+                                  batch_size=batch_size,
+                                  collate_fn=test_sampler.sample_blocks,
+                                  shuffle=True,
+                                  num_workers=0)
     # set up fine_tune epochs
     # donwstream classifier for model supervision
     model.classifier = ClassifierMLP(input_size=n_hidden, hidden_size=n_hidden, out_size=num_classes,
@@ -379,10 +367,11 @@ def finetune_panrep_for_node_classification(batch_size, category, device, fanout
         if epoch > 3:
             dur.append(time.time() - t0)
 
-        val_loss, val_acc, val_acc_auc = evaluate_panrep_fn_for_node_classification \
-            (model, val_idx, val_blocks, device, labels, category, use_cuda, loss_func, multilabel=multilabel)
+        val_loss, val_acc, val_acc_auc = \
+            evaluate_panrep_fn_for_node_classification (model, val_loader, device, labels, category, loss_func, multilabel=False)
+
         print("Epoch {:05d} | Valid Acc: {:.4f} |Valid Acc Auc: {:.4f} | Valid loss: {:.4f} | Time: {:.4f}".
-              format(epoch, val_acc, val_acc_auc, val_loss.item(), np.average(dur)))
+              format(epoch, val_acc, val_acc_auc, val_loss, np.average(dur)))
     print()
     return backward_time, forward_time, labels, model
 
@@ -461,7 +450,7 @@ def _fit(args):
     batch_size = args.batch_size
     l2norm=args.l2norm
     eval_nc=labels is not None
-    svm_eval=True
+    svm_eval=False
     eval_lp = args.test_edge_split > 0
 
     # check cuda
@@ -485,9 +474,9 @@ def _fit(args):
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=l2norm)
 
     # sampler for minibatch
-    evaluate_panrep = False
+    evaluate_panrep_decoders_during_training = False
     evaluate_every = 20
-    loader,valid_loader=initiate_sampler(train_g,batch_size,args,evaluate_panrep)
+    loader,valid_loader=initiate_sampler(train_g,batch_size,args,evaluate_panrep_decoders_during_training)
     # training loop
     print("start pretraining...")
     for epoch in range(n_epochs):
@@ -502,7 +491,7 @@ def _fit(args):
             optimizer.step()
 
             print("Train Loss: {:.4f} Epoch {:05d} | Batch {:03d}".format(loss.item(), epoch, i))
-        if evaluate_panrep and epoch % evaluate_every == 0:
+        if evaluate_panrep_decoders_during_training and epoch % evaluate_every == 0:
             eval_training_of_panrep(model=model, dataloader=valid_loader)
     print("end pretraining...")
 
@@ -548,7 +537,8 @@ def _fit(args):
         ## Test universal embeddings by training mlp classifier for node classification
 
         test_acc_prembed = mlp_classifier(
-            feats, use_cuda, n_hidden, lr_d, n_cepochs, multilabel, num_classes, labels, train_idx, val_idx, test_idx, device)
+            feats, use_cuda, n_hidden, lr_d, n_cepochs, multilabel, num_classes, labels,
+            train_idx, val_idx, test_idx, device, batch_size=args.batch_size_downstream)
         if svm_eval:
             svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std,macro_str,micro_str = evaluate_results_nc(
                 feats[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
@@ -606,7 +596,7 @@ def _fit(args):
             macro_str_log=""
             micro_str_log=""
         return " | PanRep " +macro_str+" "+micro_str+" | Test acc  PanRepFT: {:4f} | ".format(test_acc)+\
-               +" " \
+               " " \
         "| Finetune "+finmacro_str+" "+finmicro_str+"PR MRR : "+pr_mrr+" Logits: "+macro_str_log+" "+\
                micro_str_log +" Entropy "+ str(entropy) + " Test acc PR +MLP "+str(test_acc_prembed)+\
                " Test acc PRft+MLP "+str(test_acc_ftembed)
@@ -619,12 +609,13 @@ def fit(args):
             best results 700 hidden units so far
         '''
         args.splitpct = 0.1
-        n_epochs_list = [300,500]#[250,300]
+        n_epochs_list = [1]#[250,300]
         n_hidden_list =[300]#[40,200,400]
         n_layers_list = [2]
-        n_fine_tune_epochs_list= [140]#[20,50]#[30,50,150]
-        n_bases_list = [5,10]
+        n_fine_tune_epochs_list= [1]#[20,50]#[30,50,150]
+        n_bases_list = [5]
         lr_list = [1e-3]
+
         dropout_list = [0.1]
         fanout_list = []
         test_edge_split_list = [-0.025]
@@ -746,11 +737,11 @@ if __name__ == '__main__':
             help="number of propagation rounds")
     parser.add_argument("-e", "--n-epochs", type=int, default=700,
             help="number of training epochs for PanRep")
-    parser.add_argument("-n_fine_tune_epochs", "--n-fine-tune-epochs", type=int, default=300,
+    parser.add_argument("-n_fine_tune_epochs", "--n-fine-tune-epochs", type=int, default=3,
             help="number of training epochs for PanRep-FT ")
     parser.add_argument('--num-epochs-downstream', type=int, default=20)
     parser.add_argument('--num-hidden-downstream', type=int, default=16)
-    parser.add_argument('--batch_size_downstream', type=int, default=100)
+    parser.add_argument('--batch_size_downstream', type=int, default=500)
     parser.add_argument('--lr-downstream', type=float, default=0.003)
     parser.add_argument("-negative_rate_rw", "--negative-rate-rw", type=int, default=4,
                         help="number of negative examples per positive link for metapathrw supervision")
@@ -781,7 +772,7 @@ if __name__ == '__main__':
                        help="use only a single layer for the decoder for the semi-supervised loss.")
     parser.add_argument("--use-node-motifs", default=True, action='store_true',
                        help="use the node motifs")
-    parser.add_argument("--batch-size", type=int, default=5000,
+    parser.add_argument("--batch-size", type=int, default=500,
             help="Mini-batch size. If -1, use full graph training.")
     parser.add_argument("--model_path", type=str, default=None,
             help='path for save the model')
@@ -794,7 +785,7 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'imdb_preprocessed','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'ogbn-mag','--encoder', 'RGCN'])
 
 
     print(args)

@@ -400,6 +400,37 @@ def evaluation_link_prediction_wembeds(test_g,model, embeddings,train_edges,vali
                    pos_pairs, neg_pairs, eval_neg_cnt,ntype2id,etype2id)
     return res
 
+def evaluate_panrep_fn_for_node_classification(model, val_loader, device, labels, category, loss_func, multilabel=False):
+    model.eval()
+    total_acc=0
+    total_acc_auc=0
+    total_loss = 0
+    count=0
+    for i, (seeds, blocks) in enumerate(val_loader):
+        # need to copy the features
+        for i in range(len(blocks)):
+            blocks[i] = blocks[i].to(device)
+        lbl = labels[seeds[category]]
+        logits = model.classifier_forward_mb(blocks)[category]
+        loss = loss_func(logits, lbl)
+
+        pred = torch.sigmoid(logits)
+        if multilabel is False:
+            pred = pred.argmax(dim=1)
+        else:
+            pred = pred
+        acc = compute_acc(pred, lbl, multilabel)
+        total_acc += acc
+        total_loss += loss.item() * len(seeds)
+        pred = pred.cpu().numpy()
+        count+=len(seeds)
+        try:
+            acc_auc = roc_auc_score(lbl.cpu().numpy(), pred)
+            total_acc_auc+=acc_auc
+        except ValueError:
+            acc_auc = -1
+            pass
+    return total_loss/count, total_acc/count,total_acc_auc/count
 
 def evaluation_link_prediction(test_g,model,train_edges,valid_edges,test_edges,dim_size,eval_neg_cnt,n_layers,device):
     def transform_triplets(train_edges,etype2id,ntype2id):
