@@ -8,6 +8,7 @@ from dgl import function as fn
 from torch import nn as nn
 from torch.nn import functional as F
 import dgl
+from torch.cuda import nvtx
 
 class RelGraphConvHetero(nn.Module):
     r"""Relational graph convolution layer.
@@ -196,7 +197,162 @@ class RelGraphConvHetero(nn.Module):
         hs = {ntype : _apply(h,ntype) for ntype, h in hs.items()}
         return hs
 
+class RelGraphConvLowMem(nn.Module):
+    def __init__(self,
+                 in_feat,
+                 out_feat,
+                 num_rels,
+                 regularizer="basis",
+                 num_bases=None,
+                 bias=True,
+                 activation=None,
+                 self_loop=True,
+                 low_mem=False,
+                 dropout=0.0,
+                 layer_norm=False):
+        super(RelGraphConvLowMem, self).__init__()
+        self.in_feat = in_feat
+        self.out_feat = out_feat
+        self.num_rels = num_rels
+        self.regularizer = regularizer
+        self.num_bases = num_bases
+        if self.num_bases is None or self.num_bases > self.num_rels or self.num_bases <= 0:
+            self.num_bases = self.num_rels
+        self.bias = bias
+        self.activation = activation
+        self.self_loop = self_loop
+        self.low_mem = low_mem
+        self.layer_norm = layer_norm
 
+        assert low_mem
+        assert regularizer == "basis"
+
+        # cached parameters for low mem version
+        self._etypes = None
+
+        if regularizer == "basis":
+            # add basis weights
+            self.weight = nn.Parameter(torch.Tensor(self.num_bases, self.in_feat, self.out_feat))
+            if self.num_bases < self.num_rels:
+                # linear combination coefficients
+                self.w_comp = nn.Parameter(torch.Tensor(self.num_rels, self.num_bases))
+            nn.init.xavier_uniform_(self.weight, gain=nn.init.calculate_gain('relu'))
+            if self.num_bases < self.num_rels:
+                nn.init.xavier_uniform_(self.w_comp,
+                                        gain=nn.init.calculate_gain('relu'))
+            # message func
+            self.message_func = self.basis_message_func
+        elif regularizer == "bdd":
+            if in_feat % self.num_bases != 0 or out_feat % self.num_bases != 0:
+                raise ValueError(
+                    'Feature size must be a multiplier of num_bases (%d).'
+                    % self.num_bases
+                )
+            # add block diagonal weights
+            self.submat_in = in_feat // self.num_bases
+            self.submat_out = out_feat // self.num_bases
+
+            # assuming in_feat and out_feat are both divisible by num_bases
+            self.weight = nn.Parameter(torch.Tensor(
+                self.num_rels, self.num_bases * self.submat_in * self.submat_out))
+            nn.init.xavier_uniform_(self.weight, gain=nn.init.calculate_gain('relu'))
+            # message func
+            self.message_func = self.bdd_message_func
+        else:
+            raise ValueError("Regularizer must be either 'basis' or 'bdd'")
+
+        # bias
+        if self.bias:
+            self.h_bias = nn.Parameter(torch.Tensor(out_feat))
+            nn.init.zeros_(self.h_bias)
+
+        # layer norm
+        if self.layer_norm:
+            self.layer_norm_weight = nn.LayerNorm(out_feat, elementwise_affine=True)
+
+        # weight for self loop
+        if self.self_loop:
+            self.loop_weight = nn.Parameter(torch.Tensor(in_feat, out_feat))
+            nn.init.xavier_uniform_(self.loop_weight,
+                                    gain=nn.init.calculate_gain('relu'))
+
+        self.dropout = nn.Dropout(dropout)
+
+    def basis_message_func(self, edges):
+        """Message function for basis regularizer"""
+        nvtx.range_push("generate_weight")
+        if self.num_bases < self.num_rels:
+            # generate all weights from bases
+            weight = self.weight.view(self.num_bases,
+                                      self.in_feat * self.out_feat)
+            weight = torch.matmul(self.w_comp, weight).view(
+                self.num_rels, self.in_feat, self.out_feat)
+        else:
+            weight = self.weight
+        nvtx.range_pop()
+
+        # calculate msg @ W_r before put msg into edge
+        # if src is torch.int64 we expect it is an index select
+        device = edges.src['h'].device
+        nvtx.range_push("low_mem_forward")
+
+        nvtx.range_push("split")
+        h = torch.split(edges.src['h'], self.section)
+        nvtx.range_pop()
+
+        msg = []
+        for etype in range(self.num_rels):
+            if h[etype].shape[0] == 0:
+                continue
+            nvtx.range_push("select_weight")
+            w = weight[etype]
+            nvtx.range_pop()
+
+            nvtx.range_push("matmul_src_w")
+            sub_msg = torch.matmul(h[etype], w)
+            nvtx.range_pop()
+
+            msg.append(sub_msg)
+
+        nvtx.range_push("concat")
+        msg = torch.cat(msg)
+        nvtx.range_pop()
+
+        nvtx.range_pop()  # layer forward
+
+        if 'norm' in edges.data:
+            msg = msg * edges.data['norm']
+        return {'msg': msg}
+
+    def forward(self, g, feat, etypes, norm, section):
+        with g.local_scope():
+            g.srcdata['h'] = feat
+            g.edata['type'] = etypes
+            if norm is not None:
+                g.edata['norm'] = norm
+            if self.self_loop:
+                loop_message = matmul_maybe_select(feat[:g.number_of_dst_nodes()], self.loop_weight)
+            # message passing
+            self.section = section
+            g.update_all(self.message_func, fn.sum(msg='msg', out='h'))
+            self.section = None
+            # apply bias and activation
+            node_repr = g.dstdata['h']
+            if self.layer_norm:
+                node_repr = self.layer_norm_weight(node_repr)
+            if self.bias:
+                node_repr = node_repr + self.h_bias
+            if self.self_loop:
+                node_repr = node_repr + loop_message
+            if self.activation:
+                node_repr = self.activation(node_repr)
+            node_repr = self.dropout(node_repr)
+            return node_repr
+def matmul_maybe_select(A, B):
+    if A.dtype == torch.int64 and len(A.shape) == 1:
+        return B.index_select(0, A)
+    else:
+        return torch.matmul(A, B)
 class EmbeddingLayer(nn.Module):
     def __init__(self, in_size_dict, out_size, ntypes):
         super(EmbeddingLayer, self).__init__()

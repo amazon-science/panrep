@@ -58,6 +58,7 @@ class BaseRGCN(nn.Module):
             h = layer(g, h, r, norm)
         return h
 
+
 class ClassifierMLP(torch.nn.Module):
     def __init__(self, input_size, hidden_size,out_size,single_layer=False):
         super(ClassifierMLP, self).__init__()
@@ -68,14 +69,15 @@ class ClassifierMLP(torch.nn.Module):
         if single_layer:
             self.model = nn.Sequential(
                 # nn.Dropout(dropout),
-                nn.Linear(input_size, hidden_size),
-                nn.ReLU(),
+                #nn.Linear(input_size, hidden_size),
+                #nn.ReLU(),
                 # nn.BatchNorm1d(hidden_size),
                 # nn.Dropout(dropout),
-                nn.Linear(hidden_size, out_size),
-                nn.ReLU()
+                nn.Linear(input_size, out_size),
+                #nn.ReLU()
             )
         else:
+
             self.model = nn.Sequential(
                 # nn.Dropout(dropout),
                 nn.Linear(input_size, hidden_size),
@@ -87,8 +89,9 @@ class ClassifierMLP(torch.nn.Module):
                 # nn.BatchNorm1d(hidden_size ),
                 # nn.Dropout(dropout),
                 nn.Linear(hidden_size, out_size),
-                nn.ReLU()
+                #nn.ReLU()
             )
+
 
     def forward(self, x):
 

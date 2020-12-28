@@ -11,7 +11,7 @@ import dgl
 import scipy.io
 import urllib.request
 import numpy as np
-import scipy.sparse as sp
+from dgl.data.rdf import AIFBDataset, MUTAGDataset, BGSDataset, AMDataset
 import torch
 #from aux_files.DistDGL.DistDGL.python.dgl.data import OAGDataset
 from dgl.contrib.data import load_data
@@ -79,6 +79,9 @@ def load_univ_hetero_data(args):
     elif args.dataset == "acm":
         train_idx, test_idx, val_idx, labels, category, num_classes, featless_node_types, rw_neighbors, \
         train_edges, test_edges, valid_edges, train_g, valid_g, test_g = load_acm_univ_data(args)
+    elif args.dataset == 'aifb' or args.dataset == 'mutag' or args.dataset == 'bgs' or args.dataset == 'am':
+        train_idx, test_idx, val_idx, labels, category, num_classes, featless_node_types, rw_neighbors, \
+        train_edges, test_edges, valid_edges, train_g, valid_g, test_g = load_std_het_full_univ_data(args)
     elif args.dataset == "oag_full":
 
         train_idx, test_idx, val_idx, labels, category, num_classes, featless_node_types, rw_neighbors, \
@@ -104,6 +107,21 @@ def load_univ_hetero_data(args):
         train_edges, test_edges, valid_edges, train_g, valid_g, test_g=load_drkg_edge_few_shot_data(args)
     else:
         raise NotImplementedError
+    if not args.use_node_features:
+        for ntype in train_g.srctypes:
+            if train_g.srcnodes[ntype].data.get('h_f', None) is not None:
+                del  train_g.srcnodes[ntype].data['h_f']
+            if test_g.srcnodes[ntype].data.get('h_f', None) is not None:
+                del test_g.srcnodes[ntype].data['h_f']
+            if valid_g.srcnodes[ntype].data.get('h_f', None) is not None:
+                del valid_g.srcnodes[ntype].data['h_f']
+        for ntype in train_g.dsttypes:
+            if train_g.dstnodes[ntype].data.get('h_f', None) is not None:
+                del  train_g.dstnodes[ntype].data['h_f']
+            if test_g.srcnodes[ntype].data.get('h_f', None) is not None:
+                del test_g.dstnodes[ntype].data['h_f']
+            if valid_g.srcnodes[ntype].data.get('h_f', None) is not None:
+                del valid_g.dstnodes[ntype].data['h_f']
     if labels is not None and len(labels.shape)>1:
         zero_rows=np.where(~(labels).cpu().numpy().any(axis=1))[0]
 
@@ -1378,6 +1396,46 @@ def load_oag_full_univ_data(args):
     #OAGData=OAGDataset.load()
     #OAGData
     return
+def load_std_het_full_univ_data(args):
+    if args.dataset == 'aifb':
+        dataset = AIFBDataset()
+    elif args.dataset == 'mutag':
+        dataset = MUTAGDataset()
+    elif args.dataset == 'bgs':
+        dataset = BGSDataset()
+    elif args.dataset == 'am':
+        dataset = AMDataset()
+    else:
+        raise ValueError()
+    g = dataset[0]
+    category = dataset.predict_category
+    num_classes = dataset.num_classes
+    train_mask = g.nodes[category].data.pop('train_mask')
+    test_mask = g.nodes[category].data.pop('test_mask')
+    train_idx = torch.nonzero(train_mask, as_tuple=False).squeeze()
+    test_idx = torch.nonzero(test_mask, as_tuple=False).squeeze()
+    val_idx = train_idx
+    labels = g.nodes[category].data.pop('labels')
+    G = g
+    data_folder = "../data/"+args.dataset+"/"
+    metapaths = {}
+    if args.rw_supervision:
+        '''
+            TODO add metapaths
+        '''
+    use_default_split = True
+    if not use_default_split:
+        train_idx, val_idx, test_idx = create_label_split(labels.shape[0], args.splitpct, val_pct=0.00801)
+    print(G)
+    featless_node_types = []
+
+    train_g, valid_g, test_g, train_edges, valid_edges, test_edges = create_edge_graph_splits(G,
+                                                                                              0.975 - args.test_edge_split,
+                                                                                              0.025,
+                                                                                              data_folder)
+    return train_idx, test_idx, val_idx, labels, category, num_classes, featless_node_types, metapaths, \
+           train_edges, test_edges, valid_edges, train_g, valid_g, test_g
+
 
 def load_ogbn_mag_full_univ_data(args):
         use_cuda = args.gpu

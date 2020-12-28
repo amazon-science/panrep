@@ -174,10 +174,8 @@ def initiate_model(args,masked_node_types,train_g):
             mrw_interact[ntype]=[]
             for neighbor_ntype in train_g.ntypes:
                 mrw_interact[ntype] +=[neighbor_ntype]
-
-        metapathRWSupervision = MetapathRWalkerSupervision(in_dim=n_hidden, negative_rate=args.negative_rate_rw,
+        decoders['mrwd']= MetapathRWalkerSupervision(in_dim=n_hidden, negative_rate=args.negative_rate_rw,
                                                            device=device,mrw_interact=mrw_interact).to(device)
-        decoders['mrwd']=metapathRWSupervision
 
     learn_rel_embed=False
     if use_link_prediction:
@@ -190,26 +188,18 @@ def initiate_model(args,masked_node_types,train_g):
                                                        ng_rate=negative_rate_lp).to(device)
         decoders['lpd']=link_predictor
     if use_infomax_loss:
-        mutIndDisc=MutualInformationDiscriminator(n_hidden=n_hidden).to(device)
-        decoders['mid']=mutIndDisc
+        decoders['mid']=MutualInformationDiscriminator(n_hidden=n_hidden).to(device)
     if use_node_motif:
-        nodeMotifDecoder=NodeMotifDecoder(in_dim=n_hidden, h_dim=n_hidden, out_dict=out_motif_dict).to(device)
-        decoders['nmd']=nodeMotifDecoder
+        decoders['nmd']=NodeMotifDecoder(in_dim=n_hidden, h_dim=n_hidden, out_dict=out_motif_dict).to(device)
     if use_clusterandrecover_loss:
-        attributeDecoder = MultipleAttributeDecoder(
+        decoders['crd']=MultipleAttributeDecoder(
             out_size_dict=out_size_dict, in_size=n_hidden,
             h_dim=n_hidden, masked_node_types=masked_node_types,
             loss_over_all_nodes=True, single_layer=False,
             use_cluster=num_cluster>0).to(device)
-        decoders['crd']=attributeDecoder
 
-    model = PanRepHetero(n_hidden,
-                         n_hidden,
-                         encoder=encoder,
-                         decoders=decoders,
-                         num_hidden_layers=n_layers,
-                         dropout=dropout,
-                         use_cuda=use_cuda)
+    model = PanRepHetero(encoder=encoder,
+                         decoders=decoders)
     return model
 def finetune_panrep_for_node_classification(batch_size, category, device, fanout, feats, l2norm, labels, lr, metapaths,
                                             model, multilabel, n_fine_tune_epochs, n_hidden, n_layers, num_classes,
@@ -329,8 +319,9 @@ def finetune_panrep_for_node_classification(batch_size, category, device, fanout
         for i, (seeds, blocks) in enumerate(fine_tune_loader):
             batch_tic = time.time()
             # need to copy the features
-            for i in range(len(blocks)):
-                blocks[i] = blocks[i].to(device)
+            for j in range(len(blocks)):
+
+                blocks[j] = blocks[j].to(device)
             lbl = labels[seeds[category]]
             logits = model.classifier_forward_mb(blocks)[category]
             log_loss = loss_func(logits, lbl)
@@ -424,11 +415,9 @@ def _fit(args):
     n_hidden = args.n_hidden
     fanout = args.fanout
     negative_rate_lp = args.negative_rate_lp
-    n_epochs = args.n_epochs
     lr = args.lr
-    n_fine_tune_epochs = args.n_fine_tune_epochs
     only_ssl = args.only_ssl
-    single_layer = args.single_layer
+
     if rw_supervision and n_layers==1:
         return ""
     if num_cluster>0:
@@ -479,7 +468,7 @@ def _fit(args):
     loader,valid_loader=initiate_sampler(train_g,batch_size,args,evaluate_panrep_decoders_during_training)
     # training loop
     print("start pretraining...")
-    for epoch in range(n_epochs):
+    for epoch in range(args.n_epochs):
         model.train()
         rw_neighbors = generate_rwalks(g=train_g, metapaths=metapaths, samples_per_node=4, device=device,rw_supervision=rw_supervision)
 
@@ -520,7 +509,7 @@ def _fit(args):
             pr_mrr+= direct_eval_lppr_link_prediction(test_g, model, train_edges, valid_edges, test_edges, n_hidden, n_layers,
                                                       eval_neg_cnt=100, use_cuda=True)
         # finetune PanRep for link prediction
-        n_lp_fintune_epochs=n_epochs
+        n_lp_fintune_epochs=args.n_epochs
         lr_lp_ft=lr
         pr_mrr+=finetune_panrep_fn_for_link_prediction(train_g, test_g, train_edges, valid_edges, test_edges, model, batch_size,
                                                        n_hidden, negative_rate_lp, fanout, l2norm,
@@ -533,12 +522,13 @@ def _fit(args):
         else:
             labels_i=labels.cpu().numpy()
         lr_d=lr
-        n_cepochs=args.num_epochs_downstream#n_epochs
         ## Test universal embeddings by training mlp classifier for node classification
-
-        test_acc_prembed = mlp_classifier(
-            feats, use_cuda, n_hidden, lr_d, n_cepochs, multilabel, num_classes, labels,
+        if args.n_epochs>0:
+            test_acc_prembed = mlp_classifier(
+            feats, use_cuda, n_hidden, lr_d, args.num_epochs_downstream, multilabel, num_classes, labels,
             train_idx, val_idx, test_idx, device, batch_size=args.batch_size_downstream)
+        else:
+            test_acc_prembed=0
         if svm_eval:
             svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std,macro_str,micro_str = evaluate_results_nc(
                 feats[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
@@ -550,10 +540,10 @@ def _fit(args):
         backward_time, forward_time, labels, model = finetune_panrep_for_node_classification(batch_size, category, device,
                                                                                       fanout, feats, l2norm, labels, lr,
                                                                                       metapaths, model, multilabel,
-                                                                                      n_fine_tune_epochs, n_hidden,
+                                                                                      args.n_fine_tune_epochs, n_hidden,
                                                                                       n_layers, num_classes, only_ssl,
                                                                                       optimizer, rw_supervision,
-                                                                                      single_layer, test_idx, train_g,
+                                                                                      args.single_layer, test_idx, train_g,
                                                                                       train_idx, use_cuda, val_idx)
 
         # full graph evaluation here
@@ -578,7 +568,7 @@ def _fit(args):
         feats = universal_embeddings[category]
         ## Test finetuned embeddings by training an mlp classifier
         test_acc_ftembed= mlp_classifier(
-            feats, use_cuda, n_hidden, lr_d, n_cepochs, multilabel, num_classes, labels, train_idx, val_idx, test_idx, device)
+            feats, use_cuda, n_hidden, lr_d, args.num_epochs_downstream, multilabel, num_classes, labels, train_idx, val_idx, test_idx, device)
 
         if svm_eval:
             if multilabel:
@@ -609,14 +599,14 @@ def fit(args):
             best results 700 hidden units so far
         '''
         args.splitpct = 0.1
-        n_epochs_list = [1]#[250,300]
-        n_hidden_list =[300]#[40,200,400]
-        n_layers_list = [2]
-        n_fine_tune_epochs_list= [1]#[20,50]#[30,50,150]
-        n_bases_list = [5]
-        lr_list = [1e-3]
+        n_epochs_list = [0]#[250,300]
+        n_hidden_list =[64]#[40,200,400]
+        n_layers_list = [1]
+        n_fine_tune_epochs_list= [3]#[20,50]#[30,50,150]
+        n_bases_list = [2]
+        lr_list = [1e-2]
 
-        dropout_list = [0.1]
+        dropout_list = [0.3]
         fanout_list = []
         test_edge_split_list = [-0.025]
         use_link_prediction_list = [True]
@@ -739,7 +729,7 @@ if __name__ == '__main__':
             help="number of training epochs for PanRep")
     parser.add_argument("-n_fine_tune_epochs", "--n-fine-tune-epochs", type=int, default=3,
             help="number of training epochs for PanRep-FT ")
-    parser.add_argument('--num-epochs-downstream', type=int, default=20)
+    parser.add_argument('--num-epochs-downstream', type=int, default=400)
     parser.add_argument('--num-hidden-downstream', type=int, default=16)
     parser.add_argument('--batch_size_downstream', type=int, default=500)
     parser.add_argument('--lr-downstream', type=float, default=0.003)
@@ -770,9 +760,11 @@ if __name__ == '__main__':
                        help="use only the semi-supervised loss while finetuning or add it to the rest of the losses.")
     parser.add_argument("--single-layer", default=True, action='store_true',
                        help="use only a single layer for the decoder for the semi-supervised loss.")
+    parser.add_argument("--use_node_features", default=False, action='store_true',
+                       help="use node features or use embeddings instead.")
     parser.add_argument("--use-node-motifs", default=True, action='store_true',
                        help="use the node motifs")
-    parser.add_argument("--batch-size", type=int, default=500,
+    parser.add_argument("--batch-size", type=int, default=256,
             help="Mini-batch size. If -1, use full graph training.")
     parser.add_argument("--model_path", type=str, default=None,
             help='path for save the model')

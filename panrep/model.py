@@ -12,19 +12,11 @@ from node_supervision_tasks import NodeMotifDecoder,MultipleAttributeDecoder\
 
 class PanRepHetero(nn.Module):
     def __init__(self,
-                 h_dim, out_dim,
                  encoder,
                  decoders,
-                 num_hidden_layers=1,
-                 dropout=0, use_cuda=False,
                  classifier=None):
         super(PanRepHetero, self).__init__()
-        self.h_dim = h_dim
         self.decoders=decoders
-        self.out_dim = out_dim
-        self.num_hidden_layers = num_hidden_layers
-        self.dropout = dropout
-        self.use_cuda = use_cuda
         self.encoder=encoder
         self.classifier=classifier
         '''
