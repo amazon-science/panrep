@@ -12,22 +12,14 @@ from node_supervision_tasks import NodeMotifDecoder,MultipleAttributeDecoder\
 
 class PanRepHetero(nn.Module):
     def __init__(self,
-                 h_dim, out_dim,
                  encoder,
-                 out_size_dict,
-                 etypes,
-                 ntype2id,
-                 masked_node_types=[],
-                 num_hidden_layers=1,
-                 dropout=0, loss_over_all_nodes=False, use_reconstruction_task=True, use_infomax_task=True,
-                 link_prediction_task=False, use_cuda=False, average_across_node_types=False,
-                 use_node_motif=False, link_predictor=None, out_motif_dict=None, use_cluster=False,
-                 single_layer_clusterandrecover_decoder=False, classifier=None, metapathRWSupervision=None):
+                 decoders,
+                 classifier=None):
         super(PanRepHetero, self).__init__()
-        self.h_dim = h_dim
-        self.out_dim = out_dim
-        self.num_hidden_layers = num_hidden_layers
-        self.dropout = dropout
+        self.decoders=decoders
+        self.encoder=encoder
+        self.classifier=classifier
+        '''
         self.use_reconstruction_task=use_reconstruction_task
         self.use_infomax_task=use_infomax_task
         self.link_prediction_task=link_prediction_task
@@ -41,7 +33,7 @@ class PanRepHetero(nn.Module):
         self.metapathRWSupervision=metapathRWSupervision
 
         self.infomax=MutualInformationDiscriminator(n_hidden=h_dim,average_across_node_types=average_across_node_types)
-        self.use_cuda = use_cuda
+        
         self.encoder = encoder
         if link_predictor is None:
             self.link_prediction_task = False
@@ -62,27 +54,29 @@ class PanRepHetero(nn.Module):
             loss_over_all_nodes=loss_over_all_nodes,single_layer=single_layer_clusterandrecover_decoder,use_cluster=use_cluster)
         if self.use_node_motif_task:
             self.nodeMotifDecoder=NodeMotifDecoder(in_dim=self.h_dim, h_dim=self.h_dim, out_dict=out_motif_dict)
+        '''
 
     def forward(self, g, masked_nodes, sampled_links, sampled_link_labels):
 
         #h=self.encoder(corrupt=False)
         positive = self.encoder(g,corrupt=False)
         loss=0
+        for decoderName, decoderModel in self.decoders.items:
 
-        if self.use_infomax_task:
-            negative = self.encoder(g,corrupt=True)
-            infomax_loss = self.infomax(positive, negative)
-            loss += infomax_loss
+            if decoderName=='mid':
+                negative = self.encoder(g,corrupt=True)
+                infomax_loss = decoderModel(positive, negative)
+                loss += infomax_loss
 
-        if self.use_reconstruction_task:
-            reconstruct_loss = self.attributeDecoder(g,positive,masked_nodes=masked_nodes)
-            loss += reconstruct_loss
-        if self.use_node_motif_task:
-            motif_loss = self.nodeMotifDecoder(g,positive)
-            loss += motif_loss
-        if self.link_prediction_task:
-            link_prediction_loss=self.linkPredictor(g,positive, sampled_links, sampled_link_labels)
-            loss += link_prediction_loss
+            if decoderName=='crd':
+                reconstruct_loss = decoderModel(g,positive,masked_nodes=masked_nodes)
+                loss += reconstruct_loss
+            if decoderName == 'nmd':
+                motif_loss = decoderModel(g,positive)
+                loss += motif_loss
+            if decoderName=='lpd':
+                link_prediction_loss=decoderModel(g,positive, sampled_links, sampled_link_labels)
+                loss += link_prediction_loss
 
         return loss, positive
     def classifier_forward_mb(self,p_blocks):
@@ -93,8 +87,7 @@ class PanRepHetero(nn.Module):
         return logits
     def link_predictor_forward_mb(self,p_blocks):
         encoding=self.encoder.forward_mb(p_blocks)
-        link_prediction_loss = self.linkPredictor.forward_mb(g=p_blocks[-1], embed=encoding)
-        link_prediction_loss
+        link_prediction_loss = self.decoders['lpd'].forward_mb(g=p_blocks[-1], embed=encoding)
         print("Link prediction loss:{}".format(
             link_prediction_loss.detach()))
         return link_prediction_loss
@@ -110,33 +103,34 @@ class PanRepHetero(nn.Module):
         #h=self.encoder(corrupt=False)
         positive = self.encoder.forward_mb(p_blocks)
         loss=0
-        if self.use_infomax_task:
-            negative_infomax = self.encoder.forward_mb(p_blocks,permute=True)
-            infomax_loss = self.infomax.forward_mb(positive, negative_infomax)
-            loss += infomax_loss
-            print("Infomax loss {}".format(
-            infomax_loss.detach()))
+        for decoderName,decoderModel in self.decoders.items():
+            if decoderName=='mid':
+                negative_infomax = self.encoder.forward_mb(p_blocks,permute=True)
+                infomax_loss = decoderModel.forward_mb(positive, negative_infomax)
+                loss += infomax_loss
+                print("Infomax loss {}".format(
+                infomax_loss.detach()))
 
-        if self.use_reconstruction_task:
-            reconstruct_loss = self.attributeDecoder.forward_mb(p_blocks[-1], positive, masked_nodes=masked_nodes)
-            loss += reconstruct_loss
-            print("Reconstruct loss {}".format(
-            reconstruct_loss.detach()))
-        if self.use_node_motif_task:
-            motif_loss = self.nodeMotifDecoder(p_blocks[-1],positive)
-            loss += motif_loss
-            print("Node motif loss {}".format(
-            motif_loss.detach()))
-        if self.link_prediction_task:
-            link_prediction_loss=self.linkPredictor.forward_mb(g=p_blocks[-1], embed=positive)
-            loss += link_prediction_loss
-            if th.is_tensor(link_prediction_loss):
-                print("Link prediction loss:{}".format(
-                link_prediction_loss.detach()))
-        if self.rw_supervision_task and rw_neighbors is not None:
-           meta_loss=self.metapathRWSupervision.get_loss(g=p_blocks[-1], embed=positive,
-                                           rw_neighbors=rw_neighbors)
-           loss += meta_loss
-           print("meta_loss: {:.4f}".format(meta_loss.item()))
+            if decoderName=='crd':
+                reconstruct_loss = decoderModel.forward_mb(p_blocks[-1], positive, masked_nodes=masked_nodes)
+                loss += reconstruct_loss
+                print("Reconstruct loss {}".format(
+                reconstruct_loss.detach()))
+            if decoderName=='nmd':
+                motif_loss = decoderModel(p_blocks[-1],positive)
+                loss += motif_loss
+                print("Node motif loss {}".format(
+                motif_loss.detach()))
+            if decoderName=='lpd':
+                link_prediction_loss=decoderModel.forward_mb(g=p_blocks[-1], embed=positive)
+                loss += link_prediction_loss
+                if th.is_tensor(link_prediction_loss):
+                    print("Link prediction loss:{}".format(
+                    link_prediction_loss.detach()))
+            if decoderName=='mrwd' and rw_neighbors is not None:
+               meta_loss=decoderModel.get_loss(g=p_blocks[-1], embed=positive,
+                                               rw_neighbors=rw_neighbors)
+               loss += meta_loss
+               print("meta_loss: {:.4f}".format(meta_loss.item()))
 
         return loss, positive

@@ -11,7 +11,7 @@ import dgl
 import scipy.io
 import urllib.request
 import numpy as np
-import scipy.sparse as sp
+from dgl.data.rdf import AIFBDataset, MUTAGDataset, BGSDataset, AMDataset
 import torch
 #from aux_files.DistDGL.DistDGL.python.dgl.data import OAGDataset
 from dgl.contrib.data import load_data
@@ -19,6 +19,10 @@ from sklearn.model_selection import StratifiedShuffleSplit,train_test_split
 from statistics import median
 from scipy.cluster.vq import vq, kmeans2, whiten
 import pandas as pd
+from ogb.nodeproppred import DglNodePropPredDataset
+
+
+
 def compute_cluster_assignemnts(features,cluster_number):
     centroid, label = kmeans2(features,cluster_number,minit='points')
     one_hot=pd.get_dummies(label)
@@ -68,15 +72,23 @@ def load_hetero_data(args):
         raise NotImplementedError
     return train_idx,test_idx,val_idx,labels,G,category,num_classes,featless_node_types,rw_neighbors
 def load_univ_hetero_data(args):
+    multilabel=False
     if args.dataset == "imdb_preprocessed":
         train_idx,test_idx,val_idx,labels,category,num_classes,featless_node_types,rw_neighbors,\
             train_edges, test_edges, valid_edges, train_g, valid_g, test_g= load_imdb_univ_preprocessed_data(args)
     elif args.dataset == "acm":
         train_idx, test_idx, val_idx, labels, category, num_classes, featless_node_types, rw_neighbors, \
         train_edges, test_edges, valid_edges, train_g, valid_g, test_g = load_acm_univ_data(args)
+    elif args.dataset == 'aifb' or args.dataset == 'mutag' or args.dataset == 'bgs' or args.dataset == 'am':
+        train_idx, test_idx, val_idx, labels, category, num_classes, featless_node_types, rw_neighbors, \
+        train_edges, test_edges, valid_edges, train_g, valid_g, test_g = load_std_het_full_univ_data(args)
     elif args.dataset == "oag_full":
+
         train_idx, test_idx, val_idx, labels, category, num_classes, featless_node_types, rw_neighbors, \
         train_edges, test_edges, valid_edges, train_g, valid_g, test_g = load_oag_full_univ_data(args)
+    elif args.dataset == 'ogbn-mag':
+        train_idx, test_idx, val_idx, labels, category, num_classes, featless_node_types, rw_neighbors, \
+        train_edges, test_edges, valid_edges, train_g, valid_g, test_g = load_ogbn_mag_full_univ_data(args)
     elif args.dataset == "oag":
         train_idx, test_idx, val_idx, labels, category, num_classes, featless_node_types, rw_neighbors, \
         train_edges, test_edges, valid_edges, train_g, valid_g, test_g = load_oag_univ_preprocessed_data(args)
@@ -89,11 +101,27 @@ def load_univ_hetero_data(args):
     elif args.dataset == "query_biodata":
         train_idx, test_idx, val_idx, labels, category, num_classes, featless_node_types, rw_neighbors, \
         train_edges, test_edges, valid_edges, train_g, valid_g, test_g=load_query_biodata_univ_data(args)
+        train_edges, test_edges, valid_edges, train_g, valid_g, test_g=load_query_biodata_univ_data(args)
     elif args.dataset == "drkg":
         train_idx, test_idx, val_idx, labels, category, num_classes, featless_node_types, rw_neighbors, \
         train_edges, test_edges, valid_edges, train_g, valid_g, test_g=load_drkg_edge_few_shot_data(args)
     else:
         raise NotImplementedError
+    if not args.use_node_features:
+        for ntype in train_g.srctypes:
+            if train_g.srcnodes[ntype].data.get('h_f', None) is not None:
+                del  train_g.srcnodes[ntype].data['h_f']
+            if test_g.srcnodes[ntype].data.get('h_f', None) is not None:
+                del test_g.srcnodes[ntype].data['h_f']
+            if valid_g.srcnodes[ntype].data.get('h_f', None) is not None:
+                del valid_g.srcnodes[ntype].data['h_f']
+        for ntype in train_g.dsttypes:
+            if train_g.dstnodes[ntype].data.get('h_f', None) is not None:
+                del  train_g.dstnodes[ntype].data['h_f']
+            if test_g.srcnodes[ntype].data.get('h_f', None) is not None:
+                del test_g.dstnodes[ntype].data['h_f']
+            if valid_g.srcnodes[ntype].data.get('h_f', None) is not None:
+                del valid_g.dstnodes[ntype].data['h_f']
     if labels is not None and len(labels.shape)>1:
         zero_rows=np.where(~(labels).cpu().numpy().any(axis=1))[0]
 
@@ -101,7 +129,7 @@ def load_univ_hetero_data(args):
         val_idx = np.array(list(set(val_idx).difference(set(zero_rows))))
         test_idx = np.array(list(set(test_idx).difference(set(zero_rows))))
     return train_idx,test_idx,val_idx,labels,category,num_classes,featless_node_types,rw_neighbors,\
-            train_edges, test_edges, valid_edges, train_g, valid_g, test_g
+            train_edges, test_edges, valid_edges, train_g, valid_g, test_g,multilabel
 
 
 
@@ -392,7 +420,18 @@ def create_edge_graph_few_shot_splits_kge(g,directory,etype,K,val_pct=0.005) :
 
 
 def create_edge_graph_splits(g, train_pct, val_pct, directory):
-    if not os.path.exists(directory+"splits_dir_tr"+str(train_pct)+"_val_"+str(val_pct)+".pickle"):
+    if train_pct==1 and os.path.exists(directory+ "complete_splits_dir.pickle"):
+        splits_dir = pickle.load(open(os.path.join(directory,"complete_splits_dir.pickle"), "rb"))
+
+        train_g = splits_dir['train_g']
+        valid_g = splits_dir['valid_g']
+        test_g = splits_dir['test_g']
+        train_edges = splits_dir['train_edges']
+        valid_edges = splits_dir['valid_edges']
+        test_edges = splits_dir['test_edges']
+
+        return train_g, valid_g, test_g, train_edges, valid_edges, test_edges
+    elif not os.path.exists(directory+"splits_dir_tr"+str(train_pct)+"_val_"+str(val_pct)+".pickle"):
         num_nodes_per_types = {}
         for ntype in g.ntypes:
             num_nodes_per_types[ntype] = g.number_of_nodes(ntype)
@@ -667,7 +706,7 @@ def load_wn_data(args):
     else:
         labels_n=labels
     labels=labels_n
-    if args.use_cluster:
+    if args.use_clusterandrecover_loss:
         for ntype in g.ntypes:
             if g.nodes[ntype].data.get("h_f", None) is not None:
                 g.nodes[ntype].data['h_clusters']=compute_cluster_assignemnts(g.nodes[ntype].data['h_f'],cluster_number=args.num_clusters)
@@ -791,7 +830,7 @@ def load_imdb_prexiang_preprocessed_data(args):
     val_idx = np.array(val_idx)
 
     featless_node_types = []
-    if args.use_cluster:
+    if args.use_clusterandrecover_loss:
         for ntype in G.ntypes:
             if G.nodes[ntype].data.get("h_f", None) is not None:
                 G.nodes[ntype].data['h_clusters']=compute_cluster_assignemnts(G.nodes[ntype].data['h_f'],cluster_number=args.num_clusters)
@@ -1046,7 +1085,7 @@ def load_dblp_few_edge_shot_preprocessed_data(args):
         labels_n = labels
     labels = labels_n
     featless_node_types = ['conference']
-    if args.use_cluster:
+    if args.use_clusterandrecover_loss:
         for ntype in G.ntypes:
             if G.nodes[ntype].data.get("h_f", None) is not None:
                 G.nodes[ntype].data['h_clusters'] = compute_cluster_assignemnts(G.nodes[ntype].data['h_f'],
@@ -1149,7 +1188,7 @@ def load_imdb_few_edge_shot_preprocessed_data(args):
         labels_n = labels
     labels = labels_n
     featless_node_types = []
-    if args.use_cluster:
+    if args.use_clusterandrecover_loss:
         for ntype in G.ntypes:
             if G.nodes[ntype].data.get("h_f", None) is not None:
                 G.nodes[ntype].data['h_clusters'] = compute_cluster_assignemnts(G.nodes[ntype].data['h_f'],
@@ -1245,7 +1284,7 @@ def load_oag_univ_preprocessed_data(args):
 
     labels = torch.tensor(labels)
     featless_node_types = ['author']
-    if args.use_cluster:
+    if args.use_clusterandrecover_loss:
         for ntype in G.ntypes:
             if G.nodes[ntype].data.get("h_f", None) is not None:
                 G.nodes[ntype].data['h_clusters'] = compute_cluster_assignemnts(G.nodes[ntype].data['h_f'],
@@ -1342,7 +1381,7 @@ def load_oag_na_univ_preprocessed_data(args):
 
     labels = torch.tensor(labels)
     featless_node_types = ['author']
-    if args.use_cluster:
+    if args.use_clusterandrecover_loss:
         for ntype in G.ntypes:
             if G.nodes[ntype].data.get("h_f", None) is not None:
                 G.nodes[ntype].data['h_clusters'] = compute_cluster_assignemnts(G.nodes[ntype].data['h_f'],
@@ -1357,6 +1396,140 @@ def load_oag_full_univ_data(args):
     #OAGData=OAGDataset.load()
     #OAGData
     return
+def load_std_het_full_univ_data(args):
+    if args.dataset == 'aifb':
+        dataset = AIFBDataset()
+    elif args.dataset == 'mutag':
+        dataset = MUTAGDataset()
+    elif args.dataset == 'bgs':
+        dataset = BGSDataset()
+    elif args.dataset == 'am':
+        dataset = AMDataset()
+    else:
+        raise ValueError()
+    g = dataset[0]
+    category = dataset.predict_category
+    num_classes = dataset.num_classes
+    train_mask = g.nodes[category].data.pop('train_mask')
+    test_mask = g.nodes[category].data.pop('test_mask')
+    train_idx = torch.nonzero(train_mask, as_tuple=False).squeeze()
+    test_idx = torch.nonzero(test_mask, as_tuple=False).squeeze()
+    val_idx = train_idx
+    labels = g.nodes[category].data.pop('labels')
+    G = g
+    data_folder = "../data/"+args.dataset+"/"
+    metapaths = {}
+    if args.rw_supervision:
+        '''
+            TODO add metapaths
+        '''
+    use_default_split = True
+    if not use_default_split:
+        train_idx, val_idx, test_idx = create_label_split(labels.shape[0], args.splitpct, val_pct=0.00801)
+    print(G)
+    featless_node_types = []
+
+    train_g, valid_g, test_g, train_edges, valid_edges, test_edges = create_edge_graph_splits(G,
+                                                                                              0.975 - args.test_edge_split,
+                                                                                              0.025,
+                                                                                              data_folder)
+    return train_idx, test_idx, val_idx, labels, category, num_classes, featless_node_types, metapaths, \
+           train_edges, test_edges, valid_edges, train_g, valid_g, test_g
+
+
+def load_ogbn_mag_full_univ_data(args):
+        use_cuda = args.gpu
+        check_cuda = torch.cuda.is_available()
+        if use_cuda < 0:
+            check_cuda = False;
+        device = torch.device("cuda:" + str(use_cuda) if check_cuda else "cpu")
+        print("Using device", device)
+        cpu_device = torch.device("cpu");
+        dataset = DglNodePropPredDataset(name=args.dataset)
+        split_idx = dataset.get_idx_split()
+        train_idx = split_idx["train"]['paper']
+        val_idx = split_idx["valid"]['paper']
+        test_idx = split_idx["test"]['paper']
+        hg_orig, labels = dataset[0]
+        subgs = {}
+        for etype in hg_orig.canonical_etypes:
+            u, v = hg_orig.all_edges(etype=etype)
+            subgs[etype] = (u, v)
+            subgs[(etype[2], 'rev-'+etype[1], etype[0])] = (v, u)
+        hg = dgl.heterograph(subgs)
+        hg.nodes['paper'].data['feat'] = hg_orig.nodes['paper'].data['feat']
+        labels = labels['paper'].squeeze()
+
+        num_rels = len(hg.canonical_etypes)
+        num_of_ntype = len(hg.ntypes)
+        num_classes = dataset.num_classes
+        category = 'paper'
+        print('Number of relations: {}'.format(num_rels))
+        print('Number of class: {}'.format(num_classes))
+        print('Number of train: {}'.format(len(train_idx)))
+        print('Number of valid: {}'.format(len(val_idx)))
+        print('Number of test: {}'.format(len(test_idx)))
+        #node_feats=[]
+        for ntype in hg.ntypes:
+                if len(hg.nodes[ntype].data) == 0:
+                    x=0
+                    #node_feats.append(None)
+                else:
+                    assert len(hg.nodes[ntype].data) == 1
+                    feat = hg.nodes[ntype].data.pop('feat')
+                    hg.nodes[ntype].data['h_f']=feat
+                    #node_feats.append(feat.share_memory_())
+        data_folder = "../data/ogbn-mag/"
+        G=hg
+        train_g, valid_g, test_g, train_edges, valid_edges, test_edges = create_edge_graph_splits(hg,
+                                                                                                  0.975 - args.test_edge_split,
+                                                                                                  0.025,
+                                                                                                  data_folder)
+        if args.use_node_motifs:
+            '''
+            TODO add motifs
+            '''
+
+        metapaths = {}
+        if args.rw_supervision:
+            '''
+                TODO add metapaths
+            '''
+        use_default_split=True
+        if not use_default_split:
+            train_idx, val_idx, test_idx = create_label_split(labels.shape[0], args.splitpct, val_pct=0.00801)
+        print(G)
+
+        print(labels)
+
+        train_idx = np.array(train_idx)
+        test_idx = np.array(test_idx)
+        val_idx = np.array(val_idx)
+        num_classes = 349
+        multilabel=False
+        if multilabel:
+            labels_n = torch.zeros((np.shape(labels)[0], num_classes))
+
+            for i in range(np.shape(labels)[0]):
+                labels_n[i, int(labels[i]) if int(labels[i]) < 6 else int(labels[i]) - 1] = 1
+        else:
+            labels_n = torch.tensor(labels)
+
+        labels = labels_n
+        featless_node_types = []
+
+        if args.use_clusterandrecover_loss:
+            for ntype in G.ntypes:
+                if G.nodes[ntype].data.get("h_f", None) is not None:
+                    G.nodes[ntype].data['h_clusters'] = compute_cluster_assignemnts(G.nodes[ntype].data['h_f'],
+                                                                                    cluster_number=args.num_clusters)
+                    train_g.nodes[ntype].data['h_clusters'] = G.nodes[ntype].data['h_clusters']
+                    valid_g.nodes[ntype].data['h_clusters'] = G.nodes[ntype].data['h_clusters']
+                    test_g.nodes[ntype].data['h_clusters'] = G.nodes[ntype].data['h_clusters']
+        return train_idx, test_idx, val_idx, labels, category, num_classes, featless_node_types, metapaths, \
+               train_edges, test_edges, valid_edges, train_g, valid_g, test_g
+
+
 
 def load_acm_univ_data(args):
     use_cuda = args.gpu
@@ -1454,7 +1627,7 @@ def load_acm_univ_data(args):
     num_classes=13
     featless_node_types = []
 
-    if args.use_cluster:
+    if args.use_clusterandrecover_loss:
         for ntype in G.ntypes:
             if G.nodes[ntype].data.get("h_f", None) is not None:
                 G.nodes[ntype].data['h_clusters'] = compute_cluster_assignemnts(G.nodes[ntype].data['h_f'],
@@ -1554,16 +1727,17 @@ def load_imdb_univ_preprocessed_data(args):
     val_idx = np.array(val_idx)
     category = 'movie'
     num_classes = 3
-    if num_classes > 1:
+    multilabel=False
+    if multilabel:
         labels_n = torch.zeros((np.shape(labels)[0], num_classes))
 
         for i in range(np.shape(labels)[0]):
             labels_n[i, int(labels[i])] = 1
     else:
-        labels_n = labels
+        labels_n = torch.tensor(labels)
     labels = labels_n
     featless_node_types = []
-    if args.use_cluster:
+    if args.use_clusterandrecover_loss:
         for ntype in G.ntypes:
             if G.nodes[ntype].data.get("h_f", None) is not None:
                 G.nodes[ntype].data['h_clusters'] = compute_cluster_assignemnts(G.nodes[ntype].data['h_f'],
@@ -1672,7 +1846,7 @@ def load_dblp_univ_preprocessed_data(args):
         labels_n = labels
     labels = labels_n
     featless_node_types = ['conference']
-    if args.use_cluster:
+    if args.use_clusterandrecover_loss:
         for ntype in G.ntypes:
             if G.nodes[ntype].data.get("h_f", None) is not None:
                 G.nodes[ntype].data['h_clusters'] = compute_cluster_assignemnts(G.nodes[ntype].data['h_f'],
@@ -2065,7 +2239,7 @@ def load_imdb_preprocessed_data(args):
         labels_n = labels
     labels = labels_n
     featless_node_types = []
-    if args.use_cluster:
+    if args.use_clusterandrecover_loss:
         for ntype in G.ntypes:
             if G.nodes[ntype].data.get("h_f", None) is not None:
                 G.nodes[ntype].data['h_clusters']=compute_cluster_assignemnts(G.nodes[ntype].data['h_f'],cluster_number=args.num_clusters)
@@ -2138,7 +2312,7 @@ def load_dblp_preprocessed_data(args):
         labels_n = labels
     labels = labels_n
     featless_node_types = ['conference']
-    if args.use_cluster:
+    if args.use_clusterandrecover_loss:
         for ntype in G.ntypes:
             if G.nodes[ntype].data.get("h_f", None) is not None:
                 G.nodes[ntype].data['h_clusters']=compute_cluster_assignemnts(G.nodes[ntype].data['h_f'],cluster_number=args.num_clusters)
@@ -2226,7 +2400,7 @@ def load_imdb_data(args):
             G.nodes[ntype].data['h_f'] = G.nodes[ntype].data['features']
     num_classes=labels.shape[1]
     featless_node_types = []
-    if args.use_cluster:
+    if args.use_clusterandrecover_loss:
         for ntype in G.ntypes:
             if G.nodes[ntype].data.get("h_f", None) is not None:
                 G.nodes[ntype].data['h_clusters']=compute_cluster_assignemnts(G.nodes[ntype].data['h_f'],cluster_number=args.num_clusters)

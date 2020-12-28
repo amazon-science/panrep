@@ -400,6 +400,37 @@ def evaluation_link_prediction_wembeds(test_g,model, embeddings,train_edges,vali
                    pos_pairs, neg_pairs, eval_neg_cnt,ntype2id,etype2id)
     return res
 
+def evaluate_panrep_fn_for_node_classification(model, val_loader, device, labels, category, loss_func, multilabel=False):
+    model.eval()
+    total_acc=0
+    total_acc_auc=0
+    total_loss = 0
+    count=0
+    for i, (seeds, blocks) in enumerate(val_loader):
+        # need to copy the features
+        for i in range(len(blocks)):
+            blocks[i] = blocks[i].to(device)
+        lbl = labels[seeds[category]]
+        logits = model.classifier_forward_mb(blocks)[category]
+        loss = loss_func(logits, lbl)
+
+        pred = torch.sigmoid(logits)
+        if multilabel is False:
+            pred = pred.argmax(dim=1)
+        else:
+            pred = pred
+        acc = compute_acc(pred, lbl, multilabel)
+        total_acc += acc
+        total_loss += loss.item() * len(seeds)
+        pred = pred.cpu().numpy()
+        count+=len(seeds)
+        try:
+            acc_auc = roc_auc_score(lbl.cpu().numpy(), pred)
+            total_acc_auc+=acc_auc
+        except ValueError:
+            acc_auc = -1
+            pass
+    return total_loss/count, total_acc/count,total_acc_auc/count
 
 def evaluation_link_prediction(test_g,model,train_edges,valid_edges,test_edges,dim_size,eval_neg_cnt,n_layers,device):
     def transform_triplets(train_edges,etype2id,ntype2id):
@@ -907,7 +938,47 @@ def evaluate_results_nc(embeddings, labels, num_classes):
     return svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std,macro_str,micro_str
 
 
-def mlp_classifier(feats,use_cuda,n_hidden,lr_d,n_cepochs,multilabel,num_classes,labels,train_idx,val_idx,test_idx,device):
+class Dataset(th.utils.data.Dataset):
+  'Characterizes a dataset for PyTorch'
+  def __init__(self, list_IDs, labels,features):
+        'Initialization'
+        self.labels = labels
+        self.list_IDs = list_IDs
+        self.features=features
+
+  def __len__(self):
+        'Denotes the total number of samples'
+        return len(self.list_IDs)
+
+  def __getitem__(self, index):
+        'Generates one sample of data'
+        # Select sample
+        ID = self.list_IDs[index]
+
+        # Load data and get label
+        X =self.features[ID]
+        y = self.labels[ID]
+
+        return X, y
+def _compute_acc(logits, labels, multilabel):
+    if multilabel:
+        predicted_labels = th.sigmoid(logits).data > 0.5
+        return th.sum(predicted_labels.cpu() == labels.cpu()).item() / labels.numel()
+    else:
+        return th.sum(logits.argmax(dim=1).cpu() == labels.cpu()).item() / len(labels)
+def compute_acc(results, labels, multilabel):
+    """
+    Compute the accuracy of prediction given the labels.
+    """
+    if multilabel:
+        return _compute_acc(results, labels, multilabel)
+    else:
+        labels = labels.long()
+        return (results == labels).float().sum() / len(results)
+def mlp_classifier(feats,use_cuda,n_hidden,lr_d,
+                   n_cepochs,multilabel,num_classes,
+                   labels,train_idx,val_idx,test_idx,device
+                   ,batch_size=512):
     ###
     # Use the encoded features for classification
     # Here we initialize the features using the reconstructed ones
@@ -920,7 +991,15 @@ def mlp_classifier(feats,use_cuda,n_hidden,lr_d,n_cepochs,multilabel,num_classes
     if use_cuda:
         model.cuda()
         feats=feats.cuda()
+    params = {'batch_size': batch_size,
+              'shuffle': True,
+              'num_workers': 0}
+    # Generators
+    training_set = Dataset(train_idx, labels,feats)
+    training_generator = th.utils.data.DataLoader(training_set, **params)
 
+    validation_set = Dataset(val_idx, labels,feats)
+    validation_generator = th.utils.data.DataLoader(validation_set, **params)
     # optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=lr_d, weight_decay=l2norm)
 
@@ -954,63 +1033,39 @@ def mlp_classifier(feats,use_cuda,n_hidden,lr_d,n_cepochs,multilabel,num_classes
         loss_func = torch.nn.BCEWithLogitsLoss()
 
     for epoch in range(n_cepochs):
-        optimizer.zero_grad()
-        logits = model(feats)
-        if multilabel:
-            loss = loss_func(logits[train_idx].squeeze(1),
-                             labels_n[train_idx])
+        for local_batch, local_labels in  training_generator:
+            optimizer.zero_grad()
+            logits = model(local_batch)
+            local_labels =local_labels.to(device)
+            loss = loss_func(logits, (local_labels))
+            loss.backward()
+            optimizer.step()
+            pred = torch.sigmoid(logits).detach().cpu().numpy()
+
+            #train_acc = compute_acc(results=pred, labels=local_labels, multilabel=multilabel)
+        pred = model(feats)
+        if multilabel is False:
+            pred = pred.argmax(dim=1)
         else:
-            loss = loss_func(logits[train_idx].squeeze(1), torch.max(labels_n[train_idx], 1)[1])
-        loss.backward()
-        optimizer.step()
-        pred = torch.sigmoid(logits).detach().cpu().numpy()
+            pred = pred
+        train_acc = compute_acc(results= pred[train_indices],labels=labels[train_indices],multilabel=multilabel)
 
-        try:
-                train_auc_acc = roc_auc_score(labels_n.cpu()[train_indices.cpu()].numpy(),
-                                          pred[train_indices.cpu()], average='macro')
-        except ValueError:
-                train_auc_acc=0
-                pass
-        try:
-                val_auc_acc = roc_auc_score(labels_n.cpu()[valid_indices.cpu()].numpy(),
-                                        pred[valid_indices.cpu()], average='macro')
-        except ValueError:
-                val_auc_acc=0
-                pass
-        try:
-                test_auc_acc = roc_auc_score(labels_n.cpu()[test_indices.cpu()].numpy()
-                                         , pred[test_indices.cpu()], average='macro')
-        except ValueError:
-                test_auc_acc=0
-                pass
-        try:
-                test_auc_acc_w = roc_auc_score(labels_n.cpu()[test_indices.cpu()].numpy()
-                                           , pred[test_indices.cpu()], average='weighted')
-        except ValueError:
-                test_auc_acc_w=0
-                pass
-        pred = logits.argmax(1).cpu()
-        labels_l = labels.argmax(1).cpu()
-        train_acc = (pred[train_indices.cpu()] == labels_l[train_indices.cpu()]).float().mean()
-        val_acc = (pred[valid_indices.cpu()] == labels_l[valid_indices.cpu()]).float().mean()
-        test_acc = (pred[test_indices.cpu()] == labels_l[test_indices.cpu()]).float().mean()
-        test_acc_w = 0
+        val_acc = compute_acc(results=pred[valid_indices], labels=labels[valid_indices], multilabel=multilabel)
+        test_acc = compute_acc(results=pred[test_indices], labels=labels[test_indices], multilabel=multilabel)
 
-        macro_test, micro_test = macro_micro_f1(
-            torch.max(labels[test_indices], 1)[1].cpu(), torch.max(logits[test_indices], 1)[1].cpu())
+
         if best_val_acc < val_acc:
-            best_val_acc = val_acc
-            best_test_acc = test_acc
-
+           best_val_acc = val_acc
+           best_test_acc = test_acc
         if epoch % 5 == 0:
-            print('Loss %.4f, Train Acc %.4f, Val Acc %.4f (Best %.4f), Test Acc %.4f (Best %.4f), Weighted Test Acc %.4f' % (
-                loss.item(),
-                train_acc.item() if th.is_tensor(train_acc) else train_acc,
-                val_acc.item()if th.is_tensor(val_acc) else val_acc,
-                best_val_acc.item()if th.is_tensor(best_val_acc) else best_val_acc,
-                test_acc.item()if th.is_tensor(test_acc) else test_acc,
-                best_test_acc.item()if th.is_tensor(best_test_acc) else best_test_acc,test_acc_w.item()
-                if th.is_tensor(test_acc_w) else test_acc_w
-            ))
+            print('Epoch '+str (epoch))
+            print(' Train Acc %.4f, Val Acc %.4f (Best %.4f), Test Acc %.4f (Best %.4f)' % (
+                    train_acc.item() if th.is_tensor(train_acc) else train_acc,
+                    val_acc.item() if th.is_tensor(val_acc) else val_acc,
+                    best_val_acc.item() if th.is_tensor(best_val_acc) else best_val_acc,
+                    test_acc.item() if th.is_tensor(test_acc) else test_acc,
+                    best_test_acc.item() if th.is_tensor(best_test_acc) else best_test_acc
+                ))
+
     print()
     return best_test_acc
