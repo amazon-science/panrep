@@ -9,7 +9,7 @@ import math
 from layers import RelGraphConvHetero
 from functools import partial
 from sklearn.metrics import roc_auc_score
-import random
+import dgl
 
 class MetapathRWalkerSupervision(nn.Module):
         def __init__(self, in_dim, out_dim=0,  num_hidden_layers=0, reg_param=0,negative_rate=1,device=None,mrw_interact=None):
@@ -426,213 +426,62 @@ class LinkPredictorLearnableEmbed(nn.Module):
 
         return predict_loss + self.reg_param * reg_loss
 class LinkPredictorHomo(nn.Module):
-    def __init__(self, out_dim, etypes, ntype2id,reg_param=0,use_cuda=False,edg_pct=0.8,ng_rate=5,filtered=False,shared_rel_emb=False):
+    def __init__(self, h_dim, num_rels,ng_rate,use_cuda, reg_param=0):
         super(LinkPredictorHomo, self).__init__()
         self.reg_param = reg_param
-        self.etypes=etypes
-
         self.ng_rate=ng_rate
-        self.filtered = filtered
-        self.ntype2id=ntype2id
-        self.edg_pct=edg_pct
         self.use_cuda=use_cuda
-        self.out_dim=out_dim
-        self.shared_rel_emb=shared_rel_emb
-        #self.params = nn.ParameterDict({ ename: nn.Parameter(torch.Tensor(out_dim,1))  for ename in self.etypes})
-        if self.shared_rel_emb:
-            w_relation = nn.Parameter(torch.Tensor(out_dim, 1))
-            nn.init.xavier_uniform_(w_relation,
-                                   gain=nn.init.calculate_gain('relu'))
-            self.w_relation=w_relation
-        else:
-            self.w_relation = nn.ParameterDict()
-            w_relation={}
+        self.w_relation = nn.Parameter(torch.Tensor(num_rels, h_dim))
+        nn.init.xavier_uniform_(self.w_relation,
+                                gain=nn.init.calculate_gain('relu'))
 
-            for ename in self.etypes:
-                w_relation[ename] = nn.Parameter(torch.Tensor(out_dim,1))
-                nn.init.xavier_uniform_(w_relation[ename],
-                                    gain=nn.init.calculate_gain('relu'))
-            self.w_relation.update(w_relation)
-    def calc_pos_score_with_rids(self, h_emb, t_emb, rids,etypes2ids,device=None):
+    def calc_score(self, embedding, triplets):
         # DistMult
-        if self.shared_rel_emb:
-            r = self.w_relation.repeat(( 1,len(rids))).T
-        else:
-            w_relation_mat = torch.zeros((len(self.w_relation), self.out_dim)).to(device)
-
-            for etype in etypes2ids.keys():
-                w_relation_mat[etypes2ids[etype], :] = self.w_relation[etype].squeeze()
-            r = w_relation_mat[rids]
-
-
-        score = torch.sum(h_emb * r * t_emb, dim=-1)
+        s = embedding[triplets[:,0]]
+        r = self.w_relation[triplets[:,1]]
+        o = embedding[triplets[:,2]]
+        score = torch.sum(s * r * o, dim=1)
         return score
-
-    def calc_neg_tail_score(self, heads, tails, rids, num_chunks, chunk_size, neg_sample_size,etypes2ids, device=None):
-        hidden_dim = heads.shape[1]
-        if self.shared_rel_emb:
-            r = self.w_relation.repeat(( 1,len(rids))).T
-        else:
-            w_relation_mat = torch.zeros((len(self.w_relation), self.out_dim)).to(device)
-
-            for etype in etypes2ids.keys():
-                w_relation_mat[etypes2ids[etype], :] = self.w_relation[etype].squeeze()
-            r = w_relation_mat[rids]
-
-        if device is not None:
-            r = r.to(device)
-            heads = heads.to(device)
-            tails = tails.to(device)
-        tails = tails.reshape(num_chunks, neg_sample_size, hidden_dim)
-        tails = torch.transpose(tails, 1, 2)
-        tmp = (heads * r).reshape(num_chunks, chunk_size, hidden_dim)
-        return torch.bmm(tmp, tails)
-
-    def calc_neg_head_score(self, heads, tails, rids, num_chunks, chunk_size, neg_sample_size,etypes2ids, device=None):
-        hidden_dim = tails.shape[1]
-        if self.shared_rel_emb:
-            r = self.w_relation.repeat(( 1,len(rids))).T
-        else:
-            w_relation_mat = torch.zeros((len(self.w_relation), self.out_dim)).to(device)
-
-            for etype in etypes2ids.keys():
-                w_relation_mat[etypes2ids[etype], :] = self.w_relation[etype].squeeze()
-            r = w_relation_mat[rids]
-        if device is not None:
-            r = r.to(device)
-            heads = heads.to(device)
-            tails = tails.to(device)
-        heads = heads.reshape(num_chunks, neg_sample_size, hidden_dim)
-        heads = torch.transpose(heads, 1, 2)
-        tmp = (tails * r).reshape(num_chunks, chunk_size, hidden_dim)
-        return torch.bmm(tmp, heads)
-
-    def calc_score(self, g,embedding, dict_s_d):
-        # DistMult
-        score={}
-
-        for etype in self.etypes:
-            (stype,e,dtype)=g.to_canonical_etype(etype)
-            s = embedding[self.ntype2id[stype]][dict_s_d[etype][:, 0]]
-            if self.shared_rel_emb:
-                r = self.w_relation.repeat((1,len(s))).T
-            else:
-                r = self.w_relation[etype].squeeze()
-
-            o = embedding[self.ntype2id[dtype]][dict_s_d[etype][:, 1]]
-            score[etype] = torch.sum(s * r * o, dim=1)
-        return score
-
-    def calc_score_mb(self, g,embedding, dict_s_d):
-        # DistMult
-        score = {}
-        # TODO maybe represent triplets as three arrays to make it faster.
-        for etype in dict_s_d.keys():
-            (stype, e, dtype)=g.to_canonical_etype(etype)
-            s = embedding[stype][dict_s_d[etype][0]]
-            if self.shared_rel_emb:
-                r = self.w_relation.repeat((1,len(s))).T
-            else:
-                r = self.w_relation[etype].squeeze()
-            # TODO consider other formulations metapath2vec
-            o = embedding[dtype][dict_s_d[etype][1]]
-            score[etype] = torch.sum(s * r * o, dim=1)
-        return score
-
-    def regularization_loss(self, embedding):
-            loss=0
-            for e in embedding:
-                loss+=torch.mean(e.pow(2))
-            if self.shared_rel_emb:
-                loss += torch.mean(self.w_relation.pow(2))
-            else:
-                for e in self.w_relation.keys():
-                    loss+=torch.mean(self.w_relation[e].pow(2))
-            return loss
-
-    def forward(self, g,embed, edict_s_d, e_dict_labels):
-        # triplets is a list of data samples (positive and negative)
-        # each row in the triplets is a 3-tuple of (source, relation, destination)
-        score = self.calc_score(g,embed, edict_s_d)
-        predict_loss=0
-        for etype in self.etypes:
-            predict_loss += F.binary_cross_entropy_with_logits(score[etype], e_dict_labels[etype])
-
-        # TODO implement regularization
-
-        reg_loss = self.regularization_loss(embed)
-
-        return predict_loss + self.reg_param * reg_loss
-
     def generate_samples(self,g):
         # TODO move to dataloader so that it is faster
-        edg_pct=self.edg_pct
         ng_rate=self.ng_rate
-        filtered=self.filtered
-        e_dict_labels={}
-        edict_s_d={}
-        for etype in g.etypes:
-            u, v = g.all_edges(etype=etype)
-            (srctype, ety, desttype) = g.to_canonical_etype(etype)
-            # keep only pairs of nodes between dstnodes
-            src_len = g.dstnodes[srctype].data['_ID'].shape[0]
-            dest_len = g.dstnodes[desttype].data['_ID'].shape[0]
-            src_nodes_in_dest = u < src_len
-            if src_len==0 or dest_len==0 or torch.sum(src_nodes_in_dest)==0:
-                continue
-            else:
-                pos_head = u[src_nodes_in_dest]
-                pos_tail = v[src_nodes_in_dest]
-                # filter for edg_pct
-                pos_head = pos_head[:int(edg_pct * pos_head.shape[0])]
-                pos_tail = pos_tail[:int(edg_pct * pos_tail.shape[0])]
-                size_of_batch = pos_head.shape[0]
-                labels = torch.zeros(size_of_batch * (ng_rate + 1)).float()
-                if self.use_cuda:
-                    labels=labels.cuda()
-                labels[: size_of_batch] = 1
-                head = pos_head.repeat((ng_rate + 1))
-                tail = pos_tail.repeat((ng_rate + 1))
-                # TODO filter edges
-                #  set_pos_edges ={(1,3),(1,2)}
-                #  set_pos_edges = {(1, 3), (1, 2),(1, 3), (1, 2),(1, 3), (1, 2),(1, 3), (1, 2),(1, 3), (1, 2),(1, 3), (1, 2),(1, 3), (1, 2)}
-                #  neg_edges=set_neg_edges.minus(set_pos_edges)
-                head[size_of_batch:] = torch.randint(src_len, (size_of_batch * ng_rate,))
-                if filtered:
-                    pos_pair = set(tuple(map(tuple, torch.cat((pos_head.unsqueeze(0), pos_tail.unsqueeze(0)), dim=0).transpose(1,0).cpu().numpy())))
-                    neg_pair = set(tuple(map(tuple,torch.cat((head[size_of_batch:].unsqueeze(0),
-                                          tail[size_of_batch:].unsqueeze(0)), dim=0).transpose(1,0).cpu().numpy())))
-                    filt_neg_pair=neg_pair.difference(pos_pair)
-                e_dict_labels[etype]=labels
-                edict_s_d[etype]=(head,tail)
-        return e_dict_labels,edict_s_d
-    def regularization_loss_mb(self, embedding):
-            loss = 0
-            for ntype in embedding.keys():
-                loss += torch.mean(embedding[ntype].pow(2))
 
-            if self.shared_rel_emb:
-                loss += torch.mean(self.w_relation.pow(2))
-            else:
-                for e in self.w_relation.keys():
-                    loss += torch.mean(self.w_relation[e].pow(2))
-            return loss
-    def forward_mb(self, g,embed):
+        etypes = g.edata[dgl.ETYPE]
+        u, v = g.all_edges()
+        src_len = g.dstnodes['_N'].data[dgl.NID].shape[0]
+        dest_len = g.dstnodes['_N'].data[dgl.NID].shape[0]
+        src_nodes_in_dest = u < src_len
+        pos_head = u[src_nodes_in_dest]
+        pos_tail = v[src_nodes_in_dest]
+        pos_etypes=etypes[src_nodes_in_dest]
+        if src_len == 0 or dest_len == 0 or torch.sum(src_nodes_in_dest) == 0:
+            return None,None
+
+
+        size_of_batch = pos_head.shape[0]
+        labels = torch.zeros(size_of_batch * (ng_rate + 1)).float()
+        if self.use_cuda:
+            labels=labels.cuda()
+        labels[: size_of_batch] = 1
+        head = pos_head.repeat((ng_rate + 1))
+        tail = pos_tail.repeat((ng_rate + 1))
+        etypes=pos_etypes.repeat((ng_rate + 1))
+        head[size_of_batch:] = torch.randint(src_len, (size_of_batch * ng_rate,))
+        triplets=torch.cat((head.unsqueeze_(1),etypes.unsqueeze_(1),tail.unsqueeze_(1)),1)
+        return labels,triplets
+
+    def regularization_loss(self, embedding):
+        return torch.mean(embedding.pow(2)) + torch.mean(self.w_relation.pow(2))
+
+    def forward(self, g, embed):
         # triplets is a list of data samples (positive and negative)
         # each row in the triplets is a 3-tuple of (source, relation, destination)
-
-        e_dict_labels,edict_s_d=self.generate_samples(g=g)
-        score = self.calc_score_mb(g,embed, edict_s_d)
-        predict_loss=0
-        for etype in e_dict_labels.keys():
-            if len(score[etype])>0:
-                predict_loss += F.binary_cross_entropy_with_logits(score[etype], e_dict_labels[etype])
-
-        # TODO implement regularization
-
-        reg_loss = self.regularization_loss_mb(embed)
-        if self.reg_param==0:
-            return predict_loss
+        labels,triplets=self.generate_samples(g)
+        if labels is None:
+            return torch.tensor([0.0], requires_grad=True)
+        score = self.calc_score(embed, triplets)
+        predict_loss = F.binary_cross_entropy_with_logits(score, labels)
+        reg_loss = self.regularization_loss(embed)
         return predict_loss + self.reg_param * reg_loss
 
 class LinkPredictor(nn.Module):

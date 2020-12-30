@@ -27,7 +27,7 @@ from model import PanRepHomo
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader
 from node_supervision_tasks import MetapathRWalkerSupervision, \
-    LinkPredictor,LinkPredictorLearnableEmbed, MutualInformationDiscriminatorHomo,NodeMotifDecoder,ClusterRecoverDecoderHomo
+    LinkPredictor,LinkPredictorLearnableEmbed, MutualInformationDiscriminatorHomo,LinkPredictorHomo,ClusterRecoverDecoderHomo
 from encoders import EncoderRelGraphConvHomo,EncoderHGT
 import torch.nn.functional as F
 
@@ -174,9 +174,8 @@ def initiate_model(args, g,node_feats,num_rels):
             link_predictor = LinkPredictorLearnableEmbedHomo(out_dim=args.n_hidden, etypes=g.etypes,
                                                          ntype2id=ntype2id, use_cuda=use_cuda, edg_pct=1, negative_rate_lp=args.negative_rate_lp).to(device)
         else:
-            link_predictor = LinkPredictorHomo(out_dim=args.n_hidden, etypes=g.etypes,
-                                           ntype2id=ntype2id, use_cuda=use_cuda, edg_pct=1,
-                                           ng_rate=args.negative_rate_lp).to(device)
+            link_predictor = LinkPredictorHomo(
+                h_dim=args.n_hidden, num_rels=num_rels, ng_rate=args.negative_rate_lp, use_cuda=use_cuda).to(device)
         decoders['lpd']=link_predictor
     if args.use_infomax_loss:
         decoders['mid']=MutualInformationDiscriminatorHomo(n_hidden=args.n_hidden).to(device)
@@ -566,7 +565,7 @@ def fit(args):
             best results 700 hidden units so far
         '''
         args.splitpct = 0.1
-        n_epochs_list = [1]#[250,300]
+        n_epochs_list = [3]#[250,300]
         n_hidden_list =[64]#[40,200,400]
         n_layers_list = [1]
         n_fine_tune_epochs_list= [3]#[20,50]#[30,50,150]
@@ -576,9 +575,9 @@ def fit(args):
         dropout_list = [0.3]
         fanout_list = []
         test_edge_split_list = [-0.025]
-        use_link_prediction_list = [False]
-        use_clusterandrecover_loss_list =[True]#[False,True]
-        use_infomax_loss_list =[True]#[False,True]
+        use_link_prediction_list = [True]
+        use_clusterandrecover_loss_list =[False]#[False,True]
+        use_infomax_loss_list =[False]#[False,True]
         use_node_motif_list = [False]
         rw_supervision_list=[False]
         num_cluster_list=[5]
@@ -743,7 +742,7 @@ if __name__ == '__main__':
     parser.add_argument("--low-mem", default=True, action='store_true',
                help="Whether use low mem RelGraphCov")
 
-    parser.add_argument("--batch-size", type=int, default=512,
+    parser.add_argument("--batch-size", type=int, default=1024,
             help="Mini-batch size. If -1, use full graph training.")
     parser.add_argument("--model_path", type=str, default=None,
             help='path for save the model')
