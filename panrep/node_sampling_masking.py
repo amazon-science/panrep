@@ -160,7 +160,58 @@ class LinkPredictorEvalSampler:
         #print('overal sampling time')
         #print(block_sample_time)
         return seeds, blocks
+class NeighborSampler:
+    """Neighbor sampler
+    Parameters
+    ----------
+    g : DGLHeterograph
+        Full graph
+    target_idx : tensor
+        The target training node IDs in g
+    fanouts : list of int
+        Fanout of each hop starting from the seed nodes. If a fanout is None,
+        sample full neighbors.
+    """
+    def __init__(self, g, target_idx, fanouts):
+        self.g = g
+        self.target_idx = target_idx
+        self.fanouts = fanouts
 
+    """Do neighbor sample
+    Parameters
+    ----------
+    seeds :
+        Seed nodes
+    Returns
+    -------
+    tensor
+        Seed nodes, also known as target nodes
+    blocks
+        Sampled subgraphs
+    """
+    def sample_blocks(self, seeds):
+        blocks = []
+        etypes = []
+        norms = []
+        ntypes = []
+        seeds = torch.tensor(seeds).long()
+        cur = self.target_idx[seeds]
+        for fanout in self.fanouts:
+            if fanout is None or fanout == -1:
+                frontier = dgl.in_subgraph(self.g, cur)
+            else:
+                frontier = dgl.sampling.sample_neighbors(self.g, cur, fanout)
+            etypes = self.g.edata[dgl.ETYPE][frontier.edata[dgl.EID]]
+            block = dgl.to_block(frontier, cur)
+            block.srcdata[dgl.NTYPE] = self.g.ndata[dgl.NTYPE][block.srcdata[dgl.NID]]
+            block.srcdata['type_id'] = self.g.ndata[dgl.NID][block.srcdata[dgl.NID]]
+            block.edata['etype'] = etypes
+            cur = block.srcdata[dgl.NID]
+            blocks.insert(0, block)
+        # For the CR decoder
+        blocks[-1].dstdata[dgl.NTYPE] = self.g.ndata[dgl.NTYPE][blocks[-1].dstdata[dgl.NID]]
+        blocks[-1].dstdata['type_id'] = self.g.ndata[dgl.NID][blocks[-1].dstdata[dgl.NID]]
+        return seeds, blocks
 class InfomaxNodeRecNeighborSampler:
     def __init__(self, g, fanouts, device, full_neighbor=False,category=None):
         """
