@@ -159,7 +159,7 @@ class PanRepHomo(nn.Module):
         # h=self.encoder(corrupt=False)
         positive = self.encoder(p_blocks,feats, corrupt=False)
         return positive
-    def forward(self, p_blocks,node_feats, cluster_assignments=None, rw_neighbors=None):
+    def forward(self, p_blocks,node_feats, cluster_assignments=None, rw_neighbors=None,graphs=None):
 
         feats = self.embed_layer(p_blocks[0].srcdata[dgl.NID],
                             p_blocks[0].srcdata[dgl.NTYPE],
@@ -191,7 +191,7 @@ class PanRepHomo(nn.Module):
                 print("Node motif loss {}".format(
                 motif_loss.detach()))
             if decoderName=='lpd':
-                link_prediction_loss=decoderModel(g=p_blocks[-1], embed=positive)
+                link_prediction_loss=decoderModel(g=p_blocks[-1], embed=positive,graphs=graphs)
                 loss += link_prediction_loss
                 if th.is_tensor(link_prediction_loss):
                     print("Link prediction loss:{}".format(

@@ -7,7 +7,7 @@ Code:
 from evaluation import evaluation_link_prediction, \
     direct_eval_lppr_link_prediction, macro_micro_f1, evaluate_results_nc, \
     mlp_classifier,compute_acc,evaluate_panrep_fn_for_node_classification
-from node_sampling_masking import  HeteroNeighborSampler,NeighborSampler
+from node_sampling_masking import  NegativeSampler,NeighborSampler,NeighborEdgeSampler
 import os
 from utils import calculate_entropy
 from datetime import datetime
@@ -27,7 +27,7 @@ from model import PanRepHomo
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader
 from node_supervision_tasks import MetapathRWalkerSupervision, \
-    LinkPredictor,LinkPredictorLearnableEmbed, MutualInformationDiscriminatorHomo,LinkPredictorHomo,ClusterRecoverDecoderHomo
+    LinkPredictor,LinkPredictorLearnableEmbed, MutualInformationDiscriminatorHomo,LinkPredictorHomoLS,ClusterRecoverDecoderHomo
 from encoders import EncoderRelGraphConvHomo,EncoderHGT
 import torch.nn.functional as F
 
@@ -174,8 +174,8 @@ def initiate_model(args, g,node_feats,num_rels):
             link_predictor = LinkPredictorLearnableEmbedHomo(out_dim=args.n_hidden, etypes=g.etypes,
                                                          ntype2id=ntype2id, use_cuda=use_cuda, edg_pct=1, negative_rate_lp=args.negative_rate_lp).to(device)
         else:
-            link_predictor = LinkPredictorHomo(
-                h_dim=args.n_hidden, num_rels=num_rels, ng_rate=args.negative_rate_lp, use_cuda=use_cuda).to(device)
+            link_predictor = LinkPredictorHomoLS(
+                h_dim=args.n_hidden, num_rels=num_rels, use_cuda=use_cuda).to(device)
         decoders['lpd']=link_predictor
     if args.use_infomax_loss:
         decoders['mid']=MutualInformationDiscriminatorHomo(n_hidden=args.n_hidden).to(device)
@@ -374,31 +374,37 @@ def initialize_sampler(g, batch_size, args,target_idx, evaluate_panrep =False):
     # add one for the input layer
     fanouts = [args.fanout]*(args.n_layers+1)
     sampler = NeighborSampler(g, full_node_list, fanouts)
-
+    n_edges = g.num_edges()
+    train_seeds = np.arange(n_edges)
+    sampler_edge = NeighborEdgeSampler(sampler=dgl.dataloading.MultiLayerNeighborSampler(
+        fanouts))
 
 
     if evaluate_panrep:
-        pr_node_ids=list(full_node_list.numpy())
-        pr_val_ind=list(np.random.choice(len(pr_node_ids), int(len(pr_node_ids)*val_pct), replace=False))
-        pr_train_ind=list(set(list(np.arange(len(pr_node_ids)))).difference(set(pr_val_ind)))
-        loader = DataLoader(dataset=pr_train_ind,
-                            batch_size=batch_size,
-                            collate_fn=sampler.sample_blocks,
-                            shuffle=True,
-                            num_workers=0)
+
+            pr_node_ids=list(train_seeds)
+            pr_val_ind=list(np.random.choice(len(pr_node_ids), int(len(pr_node_ids)*val_pct), replace=False))
+            pr_train_ind=list(set(list(np.arange(len(pr_node_ids)))).difference(set(pr_val_ind)))
+            loader = dgl.dataloading.EdgeDataLoader(
+             g, pr_train_ind, sampler_edge, exclude='reverse_id',reverse_eids=torch.cat([
+             torch.arange(n_edges // 2, n_edges),
+             torch.arange(0, n_edges // 2)]),negative_sampler=NegativeSampler(g, args.negative_rate_lp),
+             batch_size=args.batch_size,            shuffle=True,            drop_last=False,
+             pin_memory=True,num_workers=args.num_workers)
 
 
-        valid_loader = DataLoader(dataset=pr_val_ind,
+            valid_loader = DataLoader(dataset=pr_val_ind,
                             batch_size=batch_size,
                             collate_fn=sampler.sample_blocks,
                             shuffle=True,
                             num_workers=0)
     else:
-        loader = DataLoader(dataset=target_uns.numpy(),
-                        batch_size=args.batch_size,
-                        collate_fn=sampler.sample_blocks,
-                        shuffle=True,
-                        num_workers=0)
+        loader = dgl.dataloading.EdgeDataLoader(
+            g, list(train_seeds), sampler_edge, exclude='reverse_id', reverse_eids=torch.cat([
+                torch.arange(n_edges // 2, n_edges),
+                torch.arange(0, n_edges // 2)]), negative_sampler=NegativeSampler(g, args.negative_rate_lp),
+            batch_size=args.batch_size, shuffle=True, drop_last=False,
+            pin_memory=True, num_workers=args.num_workers)
 
         valid_loader=None
     # validation sampler
@@ -461,9 +467,10 @@ def _fit(args):
         rw_neighbors = generate_rwalks(g=train_g, metapaths=metapaths, samples_per_node=4, device=device,rw_supervision=args.rw_supervision)
 
         optimizer.zero_grad()
-        for i, (seeds, blocks) in enumerate(loader):
+        for i, (input_nodes, pos_graph, neg_graph, blocks) in enumerate(loader):
 
-            loss = model(p_blocks=blocks,node_feats=node_feats,cluster_assignments=cluster_assignments,rw_neighbors=rw_neighbors)
+            loss = model(p_blocks=blocks,node_feats=node_feats,cluster_assignments=cluster_assignments,
+                         rw_neighbors=rw_neighbors,graphs=(pos_graph,neg_graph))
             loss.backward()
             optimizer.step()
 
@@ -565,7 +572,7 @@ def fit(args):
             best results 700 hidden units so far
         '''
         args.splitpct = 0.1
-        n_epochs_list = [3]#[250,300]
+        n_epochs_list = [1]#[250,300]
         n_hidden_list =[64]#[40,200,400]
         n_layers_list = [1]
         n_fine_tune_epochs_list= [3]#[20,50]#[30,50,150]
@@ -577,7 +584,7 @@ def fit(args):
         test_edge_split_list = [-0.025]
         use_link_prediction_list = [True]
         use_clusterandrecover_loss_list =[False]#[False,True]
-        use_infomax_loss_list =[False]#[False,True]
+        use_infomax_loss_list = [False]#[False,True]
         use_node_motif_list = [False]
         rw_supervision_list=[False]
         num_cluster_list=[5]
@@ -698,8 +705,8 @@ if __name__ == '__main__':
             help="number of training epochs for PanRep")
     parser.add_argument("-n_fine_tune_epochs", "--n-fine-tune-epochs", type=int, default=3,
             help="number of training epochs for PanRep-FT ")
-    parser.add_argument('--num-epochs-downstream', type=int, default=400)
-    parser.add_argument('--num-hidden-downstream', type=int, default=16)
+    parser.add_argument('--num-epochs-downstream', type=int, default=40)
+    parser.add_argument('--num-hidden-downstream', type=int, default=64)
     parser.add_argument('--batch_size_downstream', type=int, default=500)
     parser.add_argument('--lr-downstream', type=float, default=0.003)
     parser.add_argument("-negative_rate_rw", "--negative-rate-rw", type=int, default=4,
@@ -742,7 +749,7 @@ if __name__ == '__main__':
     parser.add_argument("--low-mem", default=True, action='store_true',
                help="Whether use low mem RelGraphCov")
 
-    parser.add_argument("--batch-size", type=int, default=1024,
+    parser.add_argument("--batch-size", type=int, default=2048,
             help="Mini-batch size. If -1, use full graph training.")
     parser.add_argument("--model_path", type=str, default=None,
             help='path for save the model')

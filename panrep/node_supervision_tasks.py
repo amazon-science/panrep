@@ -473,12 +473,68 @@ class LinkPredictorHomo(nn.Module):
     def regularization_loss(self, embedding):
         return torch.mean(embedding.pow(2)) + torch.mean(self.w_relation.pow(2))
 
-    def forward(self, g, embed):
+    def forward(self, g, embed,graphs=None):
         # triplets is a list of data samples (positive and negative)
         # each row in the triplets is a 3-tuple of (source, relation, destination)
         labels,triplets=self.generate_samples(g)
         if labels is None:
-            return torch.tensor([0.0], requires_grad=True)
+            res=torch.tensor([0.0], requires_grad=True)
+            if self.use_cuda:
+                res=res.cuda()
+            return res
+        score = self.calc_score(embed, triplets)
+        predict_loss = F.binary_cross_entropy_with_logits(score, labels)
+        reg_loss = self.regularization_loss(embed)
+        return predict_loss + self.reg_param * reg_loss
+class LinkPredictorHomoLS(nn.Module):
+    def __init__(self, h_dim, num_rels,use_cuda, reg_param=0):
+        super(LinkPredictorHomoLS, self).__init__()
+        self.reg_param = reg_param
+        self.use_cuda=use_cuda
+        self.w_relation = nn.Parameter(torch.Tensor(num_rels, h_dim))
+        nn.init.xavier_uniform_(self.w_relation,
+                                gain=nn.init.calculate_gain('relu'))
+
+    def calc_score(self, embedding, triplets):
+        # DistMult
+        s = embedding[triplets[:,0]]
+        r = self.w_relation[triplets[:,1]]
+        o = embedding[triplets[:,2]]
+        score = torch.sum(s * r * o, dim=1)
+        return score
+    def generate_samples(self,pos_graph,neg_graph):
+        # TODO move to dataloader so that it is faster
+
+        etypes = pos_graph.edata[dgl.ETYPE]
+        u, v = pos_graph.all_edges()
+
+        nu, nv = neg_graph.all_edges()
+        rate = int(len(nu) / len(u))
+        netypes = etypes.repeat_interleave(rate)
+        head=torch.cat((u,nu))
+        tail=torch.cat((v,nv))
+        etypes=torch.cat((etypes,netypes))
+        labels=torch.zeros(len(head)).float()
+        if self.use_cuda:
+            labels=labels.cuda()
+        labels[:len(u)]=1
+
+        triplets=torch.cat((head.unsqueeze_(1),etypes.unsqueeze_(1),tail.unsqueeze_(1)),1)
+        return labels,triplets
+
+    def regularization_loss(self, embedding):
+        return torch.mean(embedding.pow(2)) + torch.mean(self.w_relation.pow(2))
+
+    def forward(self, g, embed,graphs):
+        pos_graph,neg_graph=graphs
+        # triplets is a list of data samples (positive and negative)
+        # each row in the triplets is a 3-tuple of (source, relation, destination)
+        labels,triplets=self.generate_samples(pos_graph,neg_graph)
+        if labels is None:
+            res=torch.tensor([0.0], requires_grad=True)
+            if self.use_cuda:
+                res=res.cuda()
+            return res
         score = self.calc_score(embed, triplets)
         predict_loss = F.binary_cross_entropy_with_logits(score, labels)
         reg_loss = self.regularization_loss(embed)
