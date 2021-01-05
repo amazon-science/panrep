@@ -212,6 +212,15 @@ class PanRepHomo(nn.Module):
         encoding = self.encoder(p_blocks,feats)
         logits= self.classifier(encoding)
         return logits
+    def classifier_forward_rgcn(self, p_blocks,node_feats):
+        feats = self.embed_layer(p_blocks[0].srcdata[dgl.NID],
+                            p_blocks[0].srcdata[dgl.NTYPE],
+                            p_blocks[0].srcdata['type_id'],
+                            node_feats)
+        encoding = self.encoder(p_blocks[:len(p_blocks)-1],feats)
+        p_blocks[-1]=p_blocks[-1].to(self.encoder.device)
+        logits= self.classifier(p_blocks[-1], encoding, p_blocks[-1].edata['etype'], p_blocks[-1].edata['norm'])
+        return logits
 
     def link_predictor_forward_mb(self, p_blocks,node_feats):
         feats = self.embed_layer(p_blocks[0].srcdata[dgl.NID],

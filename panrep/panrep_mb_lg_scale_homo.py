@@ -15,7 +15,7 @@ import pickle
 import argparse
 from layers import          RelGraphEmbedLayerHomo
 import dgl
-
+from dgl.nn import RelGraphConv
 import numpy as np
 import tqdm
 import copy
@@ -217,7 +217,7 @@ def evaluate_pr(model, eval_loader, node_feats):
 
     return eval_logits, eval_seeds
 
-def evaluate_prft(model, eval_loader, node_feats):
+def evaluate_prft(model, eval_loader, node_feats,forward_function):
     model.eval()
     eval_logits = []
     eval_seeds = []
@@ -226,7 +226,7 @@ def evaluate_prft(model, eval_loader, node_feats):
         for sample_data in tqdm.tqdm(eval_loader):
             torch.cuda.empty_cache()
             seeds, blocks = sample_data
-            logits = model.classifier_forward(blocks,node_feats)
+            logits = forward_function(blocks,node_feats)
             eval_logits.append(logits.cpu().detach())
             eval_seeds.append(seeds.cpu().detach())
     eval_logits = torch.cat(eval_logits)
@@ -242,9 +242,22 @@ def evaluate_prft(model, eval_loader, node_feats):
 def finetune_panrep_for_node_classification(args, device, feats, labels, metapaths,
                                             model, multilabel, num_classes,
                                               test_idx, g,
-                                            train_idx, use_cuda, val_idx,target_idx,node_feats):
+                                            train_idx, use_cuda, val_idx,target_idx,node_feats,num_rels=None):
     # add one layer for the input layer
-    fanouts = [args.fanout]*(args.n_layers+1)
+    classifier_b = 'rgcn'
+    if classifier_b=='rgcn':
+        fanouts = [args.fanout] * (args.n_layers + 2)
+        classifier=RelGraphConv(
+            args.n_hidden, num_classes, num_rels, "basis",
+            args.n_bases, activation=None,
+            self_loop=args.use_self_loop,
+            low_mem=args.low_mem)
+        forward_function=model.classifier_forward_rgcn
+    else:
+        fanouts = [args.fanout]*(args.n_layers+1)
+        classifier=ClassifierMLP(input_size=args.n_hidden, hidden_size=args.n_hidden, out_size=num_classes,
+                      single_layer=args.single_layer)
+        forward_function=model.classifier_forward
     sampler = NeighborSampler(g, target_idx, fanouts)
     loader = DataLoader(dataset=train_idx.numpy(),
                         batch_size=args.batch_size,
@@ -269,14 +282,15 @@ def finetune_panrep_for_node_classification(args, device, feats, labels, metapat
                              num_workers=args.num_workers)
     # set up fine_tune epochs
     # donwstream classifier for model supervision
-    model.classifier = ClassifierMLP(input_size=args.n_hidden, hidden_size=args.n_hidden, out_size=num_classes,
-                                     single_layer=args.single_layer)
+
+    model.classifier = classifier
     if multilabel is False:
         loss_func = torch.nn.CrossEntropyLoss()
     else:
         loss_func = torch.nn.BCEWithLogitsLoss()
     if use_cuda:
         model.cuda()
+        model.classifier.cuda()
         feats = feats.cuda()
     labels = labels  # .float()
     best_test_acc = 0
@@ -315,7 +329,8 @@ def finetune_panrep_for_node_classification(args, device, feats, labels, metapat
 
                 blocks[j] = blocks[j].to(device)
             lbl = labels[seeds]
-            logits = model.classifier_forward(blocks,node_feats)
+            logits=forward_function(blocks, node_feats)
+
             log_loss = loss_func(logits, lbl)
             print("Log loss :" + str(log_loss.item()))
             if args.only_ssl:
@@ -350,21 +365,70 @@ def finetune_panrep_for_node_classification(args, device, feats, labels, metapat
         if epoch > 3:
             dur.append(time.time() - t0)
 
-        val_logits, val_seeds=evaluate_prft(model, val_loader, node_feats)
+        val_logits, val_seeds=evaluate_prft(model, val_loader, node_feats,forward_function)
         val_loss = F.cross_entropy(val_logits, labels[val_seeds].cpu()).item()
         val_acc = torch.sum(val_logits.argmax(dim=1) == labels[val_seeds].cpu()).item() / len(val_seeds)
         print("Epoch {:05d} | Valid Acc: {:.4f} | Valid loss: {:.4f} | Time: {:.4f}".
               format(epoch, val_acc, val_loss, np.average(dur)))
     print()
-    test_logits, test_seeds=evaluate_prft(model, test_loader, node_feats)
+    test_logits, test_seeds=evaluate_prft(model, test_loader, node_feats,forward_function)
     test_acc = torch.sum(test_logits.argmax(dim=1) == labels[test_seeds].cpu()).item() / len(test_seeds)
 
 
     return backward_time, forward_time, labels, model, test_acc
 
-
-
 def initialize_sampler(g, batch_size, args,target_idx, evaluate_panrep =False):
+    full_node_list = torch.arange(g.number_of_nodes())
+    target_uns = torch.arange(g.number_of_nodes())
+    val_pct = 0.1
+
+    use_cuda = args.gpu >= 0 and torch.cuda.is_available()
+    device = torch.device("cuda:" + str(args.gpu) if use_cuda else "cpu")
+    # add one for the input layer
+    fanouts = [args.fanout]*(args.n_layers+1)
+    sampler = NeighborSampler(g, full_node_list, fanouts)
+
+
+
+    if evaluate_panrep:
+        pr_node_ids=list(full_node_list.numpy())
+        pr_val_ind=list(np.random.choice(len(pr_node_ids), int(len(pr_node_ids)*val_pct), replace=False))
+        pr_train_ind=list(set(list(np.arange(len(pr_node_ids)))).difference(set(pr_val_ind)))
+        loader = DataLoader(dataset=pr_train_ind,
+                            batch_size=batch_size,
+                            collate_fn=sampler.sample_blocks,
+                            shuffle=True,
+                            num_workers=0)
+
+
+        valid_loader = DataLoader(dataset=pr_val_ind,
+                            batch_size=batch_size,
+                            collate_fn=sampler.sample_blocks,
+                            shuffle=True,
+                            num_workers=0)
+    else:
+        loader = DataLoader(dataset=target_uns.numpy(),
+                        batch_size=args.batch_size,
+                        collate_fn=sampler.sample_blocks,
+                        shuffle=True,
+                        num_workers=0)
+
+        valid_loader=None
+    # validation sampler
+
+    test_sampler = NeighborSampler(g, full_node_list, fanouts)
+    # the loader must obtain embeddings from all nodes
+    test_loader = DataLoader(dataset=target_idx.numpy(),
+                                 batch_size=args.eval_batch_size,
+                                 collate_fn=test_sampler.sample_blocks,
+                                 shuffle=False,
+                                 num_workers=0)
+
+    return loader,valid_loader,test_loader
+
+
+def initialize_sampler_lp(g, batch_size, args, target_idx, evaluate_panrep =False):
+    """ When lp is used different loader is required """
     full_node_list = torch.arange(g.number_of_nodes())
     target_uns = torch.arange(g.number_of_nodes())
     val_pct = 0.1
@@ -459,7 +523,7 @@ def _fit(args):
     # sampler for minibatch
     evaluate_panrep_decoders_during_training = False
     evaluate_every = 20
-    loader,valid_loader,test_loader=initialize_sampler(train_g, args.batch_size, args,target_idx, evaluate_panrep_decoders_during_training)
+    loader,valid_loader,test_loader=initialize_sampler_lp(train_g, args.batch_size, args, target_idx, evaluate_panrep_decoders_during_training)
     # training loop
     print("start pretraining...")
     for epoch in range(args.n_epochs):
@@ -533,7 +597,8 @@ def _fit(args):
                                                                                       num_classes,
                                                                                       test_idx, train_g,
                                                                                       train_idx, use_cuda,
-                                                                                             val_idx,target_idx,node_feats)
+                                                                                             val_idx,target_idx,
+                                                                                                      node_feats,num_rels=num_rels)
 
 
         universal_embeddings, test_seeds =  evaluate_pr(model, test_loader, node_feats)
