@@ -10,6 +10,7 @@ from layers import RelGraphConvHetero
 from functools import partial
 from sklearn.metrics import roc_auc_score
 import dgl
+from torch.autograd import Variable as V
 
 class MetapathRWalkerSupervision(nn.Module):
         def __init__(self, in_dim, out_dim=0,  num_hidden_layers=0, reg_param=0,negative_rate=1,device=None,mrw_interact=None):
@@ -1045,12 +1046,13 @@ class Discriminator(nn.Module):
         return features
 class MutualInformationDiscriminatorHomo(nn.Module):
     # returns the MI loss function follows the dgl implementation
-    def __init__(self, n_hidden,average_across_node_types=True,focus_category=None):
+    def __init__(self, n_hidden,average_across_node_types=True,convex_combination_weight=0.9):
         super(MutualInformationDiscriminatorHomo, self).__init__()
         self.discriminator = Discriminator(n_hidden)
         self.loss = nn.BCEWithLogitsLoss()
         self.average_across_node_types=average_across_node_types
-
+        self.convex_combination_weight=convex_combination_weight
+        self.global_summary=None
         # keep a global summary
         #self.positives
 
@@ -1060,6 +1062,14 @@ class MutualInformationDiscriminatorHomo(nn.Module):
         l2=0
         if self.average_across_node_types:
             summary = torch.sigmoid(positives.mean(dim=0))
+            if self.convex_combination_weight is not None:
+                if self.global_summary is not None :
+                    self.global_summary= \
+                        self.convex_combination_weight*self.global_summary.detach()+(1-self.convex_combination_weight)*summary
+                    summary=self.global_summary
+                else:
+                    self.global_summary=summary
+
             positive = self.discriminator(positives.mean(dim=0), summary)
             negative = self.discriminator(negatives.mean(dim=0), summary)
             l1 += self.loss(positive, torch.ones_like(positive))
