@@ -377,7 +377,9 @@ def finetune_panrep_for_node_classification(args, device, feats, labels, metapat
 
     return backward_time, forward_time, labels, model, test_acc
 
-def initialize_sampler(g, batch_size, args,target_idx, evaluate_panrep =False):
+def initialize_sampler(g, batch_size, args, target_idx, evaluate_panrep =False):
+    if args.use_link_prediction:
+        return initialize_sampler_lp_(g, batch_size, args,target_idx, evaluate_panrep )
     full_node_list = torch.arange(g.number_of_nodes())
     target_uns = torch.arange(g.number_of_nodes())
     val_pct = 0.1
@@ -427,7 +429,7 @@ def initialize_sampler(g, batch_size, args,target_idx, evaluate_panrep =False):
     return loader,valid_loader,test_loader
 
 
-def initialize_sampler_lp(g, batch_size, args, target_idx, evaluate_panrep =False):
+def initialize_sampler_lp_(g, batch_size, args, target_idx, evaluate_panrep =False):
     """ When lp is used different loader is required """
     full_node_list = torch.arange(g.number_of_nodes())
     target_uns = torch.arange(g.number_of_nodes())
@@ -523,7 +525,7 @@ def _fit(args):
     # sampler for minibatch
     evaluate_panrep_decoders_during_training = False
     evaluate_every = 20
-    loader,valid_loader,test_loader=initialize_sampler_lp(train_g, args.batch_size, args, target_idx, evaluate_panrep_decoders_during_training)
+    loader,valid_loader,test_loader=initialize_sampler(train_g, args.batch_size, args, target_idx, evaluate_panrep_decoders_during_training)
     # training loop
     print("start pretraining...")
     for epoch in range(args.n_epochs):
@@ -531,8 +533,13 @@ def _fit(args):
         rw_neighbors = generate_rwalks(g=train_g, metapaths=metapaths, samples_per_node=4, device=device,rw_supervision=args.rw_supervision)
 
         optimizer.zero_grad()
-        for i, (input_nodes, pos_graph, neg_graph, blocks) in enumerate(loader):
-
+        for i, batch in enumerate(loader):
+            if args.use_link_prediction:
+                (input_nodes, pos_graph, neg_graph, blocks)=batch
+            else:
+                (input_nodes, blocks)=batch
+                pos_graph=None
+                neg_graph=None
             loss = model(p_blocks=blocks,node_feats=node_feats,cluster_assignments=cluster_assignments,
                          rw_neighbors=rw_neighbors,graphs=(pos_graph,neg_graph))
             loss.backward()
@@ -647,9 +654,9 @@ def fit(args):
         dropout_list = [0.3]
         fanout_list = []
         test_edge_split_list = [-0.025]
-        use_link_prediction_list = [True]
+        use_link_prediction_list = [False]
         use_clusterandrecover_loss_list =[False]#[False,True]
-        use_infomax_loss_list = [False]#[False,True]
+        use_infomax_loss_list = [True]#[False,True]
         use_node_motif_list = [False]
         rw_supervision_list=[False]
         num_cluster_list=[5]
