@@ -642,12 +642,13 @@ def fit(args):
             best results 700 hidden units so far
         '''
         args.splitpct = 0.1
-        n_epochs_list = [0]#[250,300]
+        n_epochs_list = [1]#[250,300]
         n_hidden_list =[64]#[40,200,400]
         n_layers_list = [0]
         n_fine_tune_epochs_list= [3]#[20,50]#[30,50,150]
         n_bases_list = [2]
         lr_list = [1e-2]
+
 
         dropout_list = [0.5]
         fanout_list = []
