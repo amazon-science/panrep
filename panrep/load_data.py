@@ -6,7 +6,7 @@ import os
 import pickle
 import random
 from os import listdir
-from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit
+# from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit
 import dgl
 import scipy.io
 import urllib.request
@@ -18,6 +18,7 @@ from dgl.contrib.data import load_data
 from sklearn.model_selection import StratifiedShuffleSplit,train_test_split
 from statistics import median
 from scipy.cluster.vq import vq, kmeans2, whiten
+import pandas as pd
 import pandas as pd
 from ogb.nodeproppred import DglNodePropPredDataset
 
@@ -319,7 +320,7 @@ def load_univ_homo_data(args):
     #test_idx.share_memory_()
     # Create csr/coo/csc formats before launching training processes with multi-gpu.
     # This avoids creating certain formats in each sub-process, which saves momory and CPU.
-    #g.create_formats_()
+    g.create_formats_()
     metapaths={}
     train_edges=[]
     test_edges=[]

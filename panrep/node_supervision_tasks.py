@@ -1046,7 +1046,7 @@ class Discriminator(nn.Module):
         return features
 class MutualInformationDiscriminatorHomo(nn.Module):
     # returns the MI loss function follows the dgl implementation
-    def __init__(self, n_hidden,average_across_node_types=True,convex_combination_weight=0.9):
+    def __init__(self, n_hidden,average_across_node_types=True,convex_combination_weight=None):
         super(MutualInformationDiscriminatorHomo, self).__init__()
         self.discriminator = Discriminator(n_hidden)
         self.loss = nn.BCEWithLogitsLoss()
@@ -1055,6 +1055,7 @@ class MutualInformationDiscriminatorHomo(nn.Module):
         self.global_summary=None
         # keep a global summary
         #self.positives
+
 
 
     def forward(self, positives, negatives):

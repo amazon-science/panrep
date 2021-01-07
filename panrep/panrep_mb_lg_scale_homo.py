@@ -74,9 +74,10 @@ def finetune_panrep_fn_for_link_prediction(train_g, test_g, train_edges, valid_e
     for epoch in range(n_lp_fintune_epochs):
         finetune_lp_model.train()
 
-        finetune_lp_optimizer.zero_grad()
+
         for i, (seeds, blocks) in enumerate(loader):
             loss = finetune_lp_model.link_predictor_forward_mb(p_blocks=blocks)
+            finetune_lp_optimizer.zero_grad()
             loss.backward()
             finetune_lp_optimizer.step()
 
@@ -158,7 +159,7 @@ def initiate_model(args, g,node_feats,num_rels):
                              n_layers=2,
                              n_heads=4,
                              use_norm=True).to(device)
-    decoders={}
+    decoders=torch.nn.ModuleDict()
     if args.rw_supervision:
         mrw_interact = {}
         for ntype in g.ntypes:
@@ -189,7 +190,7 @@ def initiate_model(args, g,node_feats,num_rels):
 
     node_tids = g.ndata[dgl.NTYPE]
 
-    embed_layer = RelGraphEmbedLayerHomo(torch.device("cuda:" + str(args.gpu) if use_cuda else "cpu")  ,
+    embed_layer = RelGraphEmbedLayerHomo(args.gpu  ,
                                      g.number_of_nodes(),
                                      node_tids,
                                      len(node_feats),
@@ -239,11 +240,14 @@ def evaluate_prft(model, eval_loader, node_feats,forward_function):
 
 
 
-def finetune_panrep_for_node_classification(args, device, feats, labels, metapaths,
+def finetune_panrep_for_node_classification(args, device, labels, metapaths,
                                             model, multilabel, num_classes,
                                               test_idx, g,
                                             train_idx, use_cuda, val_idx,target_idx,node_feats,num_rels=None):
     # add one layer for the input layer
+#    remove_decoders=True
+#    if remove_decoders:
+#        model.decoders={}
     classifier_b = 'rgcn'
     if classifier_b=='rgcn':
         fanouts = [args.fanout] * (args.n_layers + 2)
@@ -291,7 +295,6 @@ def finetune_panrep_for_node_classification(args, device, feats, labels, metapat
     if use_cuda:
         model.cuda()
         model.classifier.cuda()
-        feats = feats.cuda()
     labels = labels  # .float()
     best_test_acc = 0
     best_val_acc = 0
@@ -316,9 +319,10 @@ def finetune_panrep_for_node_classification(args, device, feats, labels, metapat
     # connections among different nodes. Consider full graph sampling but evaluate only in the category node.
     model.link_prediction_task = False
     model.rw_supervision_task = False
+
     for epoch in range(args.n_fine_tune_epochs):
         model.train()
-        optimizer.zero_grad()
+
         if epoch > 3:
             t0 = time.time()
 
@@ -332,19 +336,12 @@ def finetune_panrep_for_node_classification(args, device, feats, labels, metapat
             logits=forward_function(blocks, node_feats)
 
             log_loss = loss_func(logits, lbl)
-            print("Log loss :" + str(log_loss.item()))
             if args.only_ssl:
                 loss = log_loss
             else:
-                if args.rw_supervision:
-                    st = time.time()
-                    rw_neighbors = generate_rwalks(g=g, metapaths=metapaths, samples_per_node=4,
-                                                   device=device)
-                    print('Sampling rw time: ' + str(time.time() - st))
-                else:
-                    rw_neighbors = None
-                pr_loss = model(p_blocks=blocks,node_feats=node_feats, rw_neighbors=rw_neighbors)
+                pr_loss = model(p_blocks=blocks,node_feats=node_feats, rw_neighbors=None)
                 loss = pr_loss + log_loss
+            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             pred = torch.sigmoid(logits)
@@ -353,12 +350,13 @@ def finetune_panrep_for_node_classification(args, device, feats, labels, metapat
             else:
                 pred = pred
             train_acc = compute_acc(pred,lbl,multilabel)
-
+            #RGCN normalizes the results per edge type by scaling xiangs implementation scales each edge.
             try:
                 train_acc_auc = roc_auc_score(lbl.cpu().numpy(), pred.detach().cpu().numpy())
             except ValueError:
                 train_acc_auc = -1
-            print(
+            if i%50==0:
+                print(
                 "Epoch {:05d} | Batch {:03d} | Train Acc: {:.4f} |Train Acc AUC: {:.4f}| Train Loss: {:.4f} | Time: {:.4f}".
                     format(epoch, i, train_acc, train_acc_auc, loss.item(), time.time() - batch_tic))
 
@@ -486,8 +484,6 @@ def initialize_sampler_lp_(g, batch_size, args, target_idx, evaluate_panrep =Fal
     return loader,valid_loader,test_loader
 def _fit(args):
     #dblp add the original node split and test...
-
-
     if args.rw_supervision and args.n_layers==1:
         return "Not supported"
     if args.num_cluster>0 and args.use_clusterandrecover_loss:
@@ -532,7 +528,7 @@ def _fit(args):
         model.train()
         rw_neighbors = generate_rwalks(g=train_g, metapaths=metapaths, samples_per_node=4, device=device,rw_supervision=args.rw_supervision)
 
-        optimizer.zero_grad()
+
         for i, batch in enumerate(loader):
             if args.use_link_prediction:
                 (input_nodes, pos_graph, neg_graph, blocks)=batch
@@ -542,6 +538,7 @@ def _fit(args):
                 neg_graph=None
             loss = model(p_blocks=blocks,node_feats=node_feats,cluster_assignments=cluster_assignments,
                          rw_neighbors=rw_neighbors,graphs=(pos_graph,neg_graph))
+            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
@@ -551,10 +548,12 @@ def _fit(args):
     print("end pretraining...")
 
     ## Obtain universal embeddings and evaluate
-    universal_embeddings, test_seeds =  evaluate_pr(model, test_loader, node_feats)
-    idx_sorted=torch.argsort(test_seeds)
-    universal_embeddings=universal_embeddings[idx_sorted]
-
+    if args.n_epochs>0:
+        universal_embeddings, test_seeds =  evaluate_pr(model, test_loader, node_feats)
+        idx_sorted=torch.argsort(test_seeds)
+        universal_embeddings=universal_embeddings[idx_sorted]
+    else:
+        universal_embeddings=None
     # calculate entropy
     entropy = ""
 
@@ -577,7 +576,6 @@ def _fit(args):
 
 
 
-        feats = universal_embeddings
         if multilabel:
             labels_i=np.argmax(labels.cpu().numpy(),axis=1)
         else:
@@ -586,20 +584,20 @@ def _fit(args):
         ## Test universal embeddings by training mlp classifier for node classification
         if args.n_epochs>0:
             test_acc_prembed = mlp_classifier(
-            feats, use_cuda, args.n_hidden, lr_d, args.num_epochs_downstream, multilabel, num_classes, labels,
+            universal_embeddings, use_cuda, args.n_hidden, lr_d, args.num_epochs_downstream, multilabel, num_classes, labels,
             train_idx, val_idx, test_idx, device, batch_size=args.batch_size_downstream)
         else:
             test_acc_prembed=0
         if svm_eval:
             svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std,macro_str,micro_str = evaluate_results_nc(
-                feats[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
+                universal_embeddings[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
         else:
             macro_str=""
             micro_str=""
 
         ## Finetune PanRep for node classification
         backward_time, forward_time, labels, model,test_acc = finetune_panrep_for_node_classification(args, device,
-                                                                                      feats, labels,
+                                                                                      labels,
                                                                                       metapaths, model, multilabel,
                                                                                       num_classes,
                                                                                       test_idx, train_g,
@@ -644,14 +642,14 @@ def fit(args):
             best results 700 hidden units so far
         '''
         args.splitpct = 0.1
-        n_epochs_list = [1]#[250,300]
+        n_epochs_list = [0]#[250,300]
         n_hidden_list =[64]#[40,200,400]
-        n_layers_list = [1]
+        n_layers_list = [0]
         n_fine_tune_epochs_list= [3]#[20,50]#[30,50,150]
         n_bases_list = [2]
-        lr_list = [1e-3]
+        lr_list = [1e-2]
 
-        dropout_list = [0.3]
+        dropout_list = [0.5]
         fanout_list = []
         test_edge_split_list = [-0.025]
         use_link_prediction_list = [False]
@@ -692,7 +690,7 @@ def fit(args):
                                                                                                     and not use_node_motif and not rw_supervision:
                                                                                                 continue
                                                                                             else:
-                                                                                                fanout=15
+                                                                                                fanout=25
                                                                                                 args.rw_supervision = rw_supervision
                                                                                                 args.n_layers = n_layers
                                                                                                 args.use_clusterandrecover_loss = use_clusterandrecover_loss
@@ -790,8 +788,9 @@ if __name__ == '__main__':
             help="dataset to use")
     parser.add_argument("-en", "--encoder", type=str, required=True,
                         help="Encoder to use")
-    parser.add_argument("--l2norm", type=float, default=0.0001,
+    parser.add_argument("--l2norm", type=float, default=0,
             help="l2 norm coef")
+
     parser.add_argument("--use-self-loop", default=False, action='store_true',
             help="include self feature as a special relation")
     parser.add_argument("--use-infomax-loss", default=True, action='store_true',
@@ -821,7 +820,7 @@ if __name__ == '__main__':
     parser.add_argument("--low-mem", default=True, action='store_true',
                help="Whether use low mem RelGraphCov")
 
-    parser.add_argument("--batch-size", type=int, default=2048,
+    parser.add_argument("--batch-size", type=int, default=512,
             help="Mini-batch size. If -1, use full graph training.")
     parser.add_argument("--model_path", type=str, default=None,
             help='path for save the model')
