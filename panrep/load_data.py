@@ -6,7 +6,7 @@ import os
 import pickle
 import random
 from os import listdir
-from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit
+# from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit
 import dgl
 import scipy.io
 import urllib.request
@@ -18,6 +18,7 @@ from dgl.contrib.data import load_data
 from sklearn.model_selection import StratifiedShuffleSplit,train_test_split
 from statistics import median
 from scipy.cluster.vq import vq, kmeans2, whiten
+import pandas as pd
 import pandas as pd
 from ogb.nodeproppred import DglNodePropPredDataset
 
@@ -131,8 +132,21 @@ def load_univ_hetero_data(args):
     return train_idx,test_idx,val_idx,labels,category,num_classes,featless_node_types,rw_neighbors,\
             train_edges, test_edges, valid_edges, train_g, valid_g, test_g,multilabel
 
+def hetero_data_to_homo_data(train_idx, test_idx, val_idx, labels, category, num_classes,
+                             featless_node_types, rw_neighbors,
+                             train_edges, test_edges, valid_edges, train_gh, valid_g, test_g):
+    category_id = len(train_gh.ntypes)
+    for i, ntype in enumerate(train_gh.ntypes):
+        if ntype == category:
+            category_id = i
+    train_g = dgl.to_homogeneous(train_gh)
+    node_ids = torch.arange(train_g.number_of_nodes())
+    node_tids = train_g.ndata[dgl.NTYPE]
+    loc = (node_tids == category_id)
+    target_idx = node_ids[loc]
 
-
+    return train_idx, test_idx, val_idx, labels, category, num_classes, featless_node_types, rw_neighbors, \
+        train_edges, test_edges, valid_edges, train_g, valid_g, test_g
 def load_few_edge_shot_hetero_data(args):
     if args.dataset == "imdb_preprocessed":
         train_idx,test_idx,val_idx,labels,category,num_classes,featless_node_types,rw_neighbors,\
@@ -147,6 +161,177 @@ def load_few_edge_shot_hetero_data(args):
         raise NotImplementedError
     return train_idx,test_idx,val_idx,labels,category,num_classes,featless_node_types,rw_neighbors,\
             train_edges, test_edges, valid_edges, train_g, valid_g, test_g
+def load_univ_homo_data(args):
+    ogb_dataset = False
+    oag_data = False
+    if args.dataset == 'aifb':
+        dataset = AIFBDataset()
+    elif args.dataset == 'mutag':
+        dataset = MUTAGDataset()
+    elif args.dataset == 'bgs':
+        dataset = BGSDataset()
+    elif args.dataset == 'am':
+        dataset = AMDataset()
+    elif args.dataset == 'oag_cs':
+        raise NotImplementedError
+        #dataset = load_oag(dataset='cs')
+        #oag_data = True
+    elif args.dataset == 'ogbn-mag':
+        dataset = DglNodePropPredDataset(name=args.dataset)
+        ogb_dataset = True
+    else:
+        raise ValueError()
+
+    if ogb_dataset is True:
+        split_idx = dataset.get_idx_split()
+        train_idx = split_idx["train"]['paper']
+        val_idx = split_idx["valid"]['paper']
+        test_idx = split_idx["test"]['paper']
+        hg_orig, labels = dataset[0]
+        subgs = {}
+        for etype in hg_orig.canonical_etypes:
+            u, v = hg_orig.all_edges(etype=etype)
+            subgs[etype] = (u, v)
+            subgs[(etype[2], 'rev-' + etype[1], etype[0])] = (v, u)
+        hg = dgl.heterograph(subgs)
+        hg.nodes['paper'].data['feat'] = hg_orig.nodes['paper'].data['feat']
+        labels = labels['paper'].squeeze()
+
+        num_rels = len(hg.canonical_etypes)
+        num_of_ntype = len(hg.ntypes)
+        num_classes = dataset.num_classes
+        if args.dataset == 'ogbn-mag':
+            category = 'paper'
+        print('Number of relations: {}'.format(num_rels))
+        print('Number of class: {}'.format(num_classes))
+        print('Number of train: {}'.format(len(train_idx)))
+        print('Number of valid: {}'.format(len(val_idx)))
+        print('Number of test: {}'.format(len(test_idx)))
+
+        if args.use_node_features:
+
+            node_feats = []
+            for ntype in hg.ntypes:
+                if len(hg.nodes[ntype].data) == 0:
+                    node_feats.append(None)
+                else:
+                    assert len(hg.nodes[ntype].data) == 1
+                    feat = hg.nodes[ntype].data.pop('feat')
+                    node_feats.append(feat.share_memory_())
+        else:
+            node_feats = [None] * num_of_ntype
+    elif oag_data:
+        hg = dataset
+
+        num_rels = len(hg.canonical_etypes)
+        num_of_ntype = len(hg.ntypes)
+
+        category = 'paper'
+        labels = hg.nodes[category].data.pop('labels')
+        num_classes = labels.shape[1]
+        valid_mask = hg.nodes[category].data.pop('val_mask')
+        train_mask = hg.nodes[category].data.pop('train_mask')
+        test_mask = hg.nodes[category].data.pop('test_mask')
+
+        train_idx = torch.nonzero(train_mask).squeeze()
+        test_idx = torch.nonzero(test_mask).squeeze()
+        val_idx = torch.nonzero(valid_mask).squeeze()
+        if args.use_node_features:
+            node_feats = []
+            for ntype in hg.ntypes:
+                if len(hg.nodes[ntype].data) == 0:
+                    node_feats.append(None)
+                else:
+                    assert len(hg.nodes[ntype].data) == 1
+                    feat = hg.nodes[ntype].data.pop('feat')
+                    node_feats.append(feat.share_memory_())
+        else:
+            node_feats = [None] * num_of_ntype
+
+    else:
+        # Load from hetero-graph
+        hg = dataset[0]
+
+        num_rels = len(hg.canonical_etypes)
+        num_of_ntype = len(hg.ntypes)
+        category = dataset.predict_category
+        num_classes = dataset.num_classes
+        train_mask = hg.nodes[category].data.pop('train_mask')
+        test_mask = hg.nodes[category].data.pop('test_mask')
+        labels = hg.nodes[category].data.pop('labels')
+        train_idx = torch.nonzero(train_mask).squeeze()
+        test_idx = torch.nonzero(test_mask).squeeze()
+        node_feats = [None] * num_of_ntype
+
+        # AIFB, MUTAG, BGS and AM datasets do not provide validation set split.
+        # Split train set into train and validation if args.validation is set
+        # otherwise use train set as the validation set.
+        if args.validation:
+            val_idx = train_idx[:len(train_idx) // 5]
+            train_idx = train_idx[len(train_idx) // 5:]
+        else:
+            val_idx = train_idx
+
+    # calculate norm for each edge type and store in edge
+    if args.global_norm is False:
+        for canonical_etype in hg.canonical_etypes:
+            u, v, eid = hg.all_edges(form='all', etype=canonical_etype)
+            _, inverse_index, count = torch.unique(v, return_inverse=True, return_counts=True)
+            degrees = count[inverse_index]
+            norm = torch.ones(eid.shape[0]) / degrees
+            norm = norm.unsqueeze(1)
+            hg.edges[canonical_etype].data['norm'] = norm
+
+    # get target category id
+    category_id = len(hg.ntypes)
+    for i, ntype in enumerate(hg.ntypes):
+        if ntype == category:
+            category_id = i
+
+    g = dgl.to_homogeneous(hg, edata=['norm'])
+    if args.global_norm:
+        u, v, eid = g.all_edges(form='all')
+        _, inverse_index, count = torch.unique(v, return_inverse=True, return_counts=True)
+        degrees = count[inverse_index]
+        norm = torch.ones(eid.shape[0]) / degrees
+        norm = norm.unsqueeze(1)
+        g.edata['norm'] = norm
+
+    g.ndata[dgl.NTYPE].share_memory_()
+    g.edata[dgl.ETYPE].share_memory_()
+    g.edata['norm'].share_memory_()
+    node_ids = torch.arange(g.number_of_nodes())
+
+    # find out the target node ids
+    node_tids = g.ndata[dgl.NTYPE]
+    loc = (node_tids == category_id)
+    target_idx = node_ids[loc]
+    cluster_assignments=[]
+    if args.use_clusterandrecover_loss:
+        for feat in node_feats:
+            if feat is not None:
+                cluster_assignments.append(compute_cluster_assignemnts(feat, cluster_number=args.num_cluster))
+            else:
+                cluster_assignments.append(None)
+
+    #target_idx.share_memory_()
+    #train_idx.share_memory_()
+    #val_idx.share_memory_()
+    #test_idx.share_memory_()
+    # Create csr/coo/csc formats before launching training processes with multi-gpu.
+    # This avoids creating certain formats in each sub-process, which saves momory and CPU.
+    g.create_formats_()
+    metapaths={}
+    train_edges=[]
+    test_edges=[]
+    valid_edges=[]
+    test_edges=[]
+    train_g=g
+    valid_g=g
+    test_g=g
+    multilabel=False
+    return train_idx,val_idx,test_idx,target_idx,labels,num_classes,node_feats,cluster_assignments,\
+           metapaths, train_edges, test_edges, valid_edges, train_g, valid_g, test_g,multilabel,num_rels
 
 def load_kge_hetero_data(args):
     if args.dataset == "imdb_preprocessed":
@@ -208,13 +393,13 @@ def load_link_pred_query_biodata_data(args):
 
     # In[13]:
 
-    g = pickle.load(open(os.path.join(data_folder, 'graph.pickle'), "rb")).to(torch.device("cpu"))
+    g = pickle.load(open(os.patorch.join(data_folder, 'graph.pickle'), "rb")).to(torch.device("cpu"))
     #get eid from heterograph and use dgl.edge_subgraph
     train_pct = 0.8
     val_pct= 0.1
     #train_g,valid_g,test_g,train_edges,valid_edges,test_edges=create_edge_graph_splits(g,train_pct,val_pct,data_folder)
 
-    splits_dir=pickle.load(open(os.path.join(data_folder, 'splits_dir.pickle'), "rb"))
+    splits_dir=pickle.load(open(os.patorch.join(data_folder, 'splits_dir.pickle'), "rb"))
     #TODO fix this is wrong had to add all edges in the testign graph
     #
     train_g=1#splits_dir['train_g']
@@ -228,8 +413,8 @@ def load_link_pred_query_biodata_data(args):
     return train_edges, test_edges, valid_edges, train_g,valid_g,test_g, featless_node_types
 
 def create_edge_few_shot_splits(g,directory,etype,K=10,val_pct=0.01):
-    if os.path.exists(os.path.join(directory, "few_shot_splits_dir"+str(K)+".pickle")):
-        splits_dir = pickle.load(open(os.path.join(directory, "few_shot_splits_dir"+str(K)+".pickle"), "rb"))
+    if os.patorch.exists(os.patorch.join(directory, "few_shot_splits_dir"+str(K)+".pickle")):
+        splits_dir = pickle.load(open(os.patorch.join(directory, "few_shot_splits_dir"+str(K)+".pickle"), "rb"))
 
         train_g = splits_dir['train_g']
         valid_g = splits_dir['valid_g']
@@ -290,14 +475,14 @@ def create_edge_few_shot_splits(g,directory,etype,K=10,val_pct=0.01):
                 test_g.nodes[ntype].data['h_f'] = g.nodes[ntype].data['h_f']
         splits_dir={"train_g":train_g,"valid_g":valid_g,"test_g":test_g,"train_edges":train_edges,
                     "valid_edges":valid_edges,"test_edges":test_edges,}
-        pickle.dump(splits_dir, open(os.path.join(directory, "few_shot_splits_dir"+str(K)+".pickle"), "wb"),
+        pickle.dump(splits_dir, open(os.patorch.join(directory, "few_shot_splits_dir"+str(K)+".pickle"), "wb"),
                     protocol=4);
 
     return train_g,valid_g,test_g,train_edges,valid_edges,test_edges
 
 def create_edge_graph_splits_kge(g,train_pct,val_pct,directory):
 
-    if not os.path.exists(directory + "splits_dir_tr" + str(train_pct) + "_val_" + str(val_pct) + ".pickle"):
+    if not os.patorch.exists(directory + "splits_dir_tr" + str(train_pct) + "_val_" + str(val_pct) + ".pickle"):
 
         num_nodes_per_types = {}
         for ntype in g.ntypes:
@@ -340,7 +525,7 @@ def create_edge_graph_splits_kge(g,train_pct,val_pct,directory):
             for item in test_triples:
                 f.writelines("{}\t{}\t{}\n".format(item[0], item[1], item[2]))
     else:
-        splits_dir = pickle.load(open(os.path.join(directory,
+        splits_dir = pickle.load(open(os.patorch.join(directory,
                     "splits_dir_tr"+str(train_pct)+"_val_"+str(val_pct)+".pickle"), "rb"))
 
         train_g = splits_dir['train_g']
@@ -370,7 +555,7 @@ def create_edge_graph_splits_kge(g,train_pct,val_pct,directory):
 
     return
 def create_edge_graph_few_shot_splits_kge(g,directory,etype,K,val_pct=0.005) :
-    if not os.path.exists(directory+'train'+str(K)+'.txt'):
+    if not os.patorch.exists(directory+'train'+str(K)+'.txt'):
         num_nodes_per_types = {}
         for ntype in g.ntypes:
             num_nodes_per_types[ntype] = g.number_of_nodes(ntype)
@@ -420,8 +605,8 @@ def create_edge_graph_few_shot_splits_kge(g,directory,etype,K,val_pct=0.005) :
 
 
 def create_edge_graph_splits(g, train_pct, val_pct, directory):
-    if train_pct==1 and os.path.exists(directory+ "complete_splits_dir.pickle"):
-        splits_dir = pickle.load(open(os.path.join(directory,"complete_splits_dir.pickle"), "rb"))
+    if train_pct==1 and os.patorch.exists(directory+ "complete_splits_dir.pickle"):
+        splits_dir = pickle.load(open(os.patorch.join(directory,"complete_splits_dir.pickle"), "rb"))
 
         train_g = splits_dir['train_g']
         valid_g = splits_dir['valid_g']
@@ -431,7 +616,7 @@ def create_edge_graph_splits(g, train_pct, val_pct, directory):
         test_edges = splits_dir['test_edges']
 
         return train_g, valid_g, test_g, train_edges, valid_edges, test_edges
-    elif not os.path.exists(directory+"splits_dir_tr"+str(train_pct)+"_val_"+str(val_pct)+".pickle"):
+    elif not os.patorch.exists(directory+"splits_dir_tr"+str(train_pct)+"_val_"+str(val_pct)+".pickle"):
         num_nodes_per_types = {}
         for ntype in g.ntypes:
             num_nodes_per_types[ntype] = g.number_of_nodes(ntype)
@@ -478,13 +663,13 @@ def create_edge_graph_splits(g, train_pct, val_pct, directory):
         if train_pct==1:
             splits_dir = {"train_g": g, "valid_g": g, "test_g": g, "train_edges": train_edges,
                           "valid_edges": valid_edges, "test_edges": test_edges, }
-            pickle.dump(splits_dir, open(os.path.join(directory, "complete_splits_dir.pickle"), "wb"),
+            pickle.dump(splits_dir, open(os.patorch.join(directory, "complete_splits_dir.pickle"), "wb"),
                         protocol=4);
         else:
-            pickle.dump(splits_dir, open(os.path.join(directory, "splits_dir_tr"+str(train_pct)+"_val_"+str(val_pct)+".pickle"), "wb"),
+            pickle.dump(splits_dir, open(os.patorch.join(directory, "splits_dir_tr"+str(train_pct)+"_val_"+str(val_pct)+".pickle"), "wb"),
                     protocol=4);
     else:
-        splits_dir = pickle.load(open(os.path.join(directory,
+        splits_dir = pickle.load(open(os.patorch.join(directory,
                     "splits_dir_tr"+str(train_pct)+"_val_"+str(val_pct)+".pickle"), "rb"))
 
         train_g = splits_dir['train_g']
@@ -548,7 +733,7 @@ def load_link_pred_wn_pick_data(args):
 
     # In[13]:
 
-    data = pickle.load(open(os.path.join(data_folder, 'data_lp_motifs.pickle'), "rb"))
+    data = pickle.load(open(os.patorch.join(data_folder, 'data_lp_motifs.pickle'), "rb"))
     train_edges=data["train_edges"]
     test_edges=data["test_edges"]
     valid_edges=data["valid_edges"]
@@ -607,8 +792,8 @@ def load_link_pred_wn_data(args):
 
     # In[13]:
 
-    g = pickle.load(open(os.path.join(data_folder, 'graph_reduced.pickle'), "rb")).to(torch.device("cpu"))
-    link_pred_splits=pickle.load(open(os.path.join(data_folder, 'link_pred_splits.pickle'), "rb"))#.to(torch.device("cpu"))
+    g = pickle.load(open(os.patorch.join(data_folder, 'graph_reduced.pickle'), "rb")).to(torch.device("cpu"))
+    link_pred_splits=pickle.load(open(os.patorch.join(data_folder, 'link_pred_splits.pickle'), "rb"))#.to(torch.device("cpu"))
     num_nodes_per_types={}
     for ntype in g.ntypes:
         num_nodes_per_types[ntype]=g.number_of_nodes(ntype)
@@ -671,7 +856,7 @@ def load_wn_data(args):
     # In[13]:
     # graph file has 81 different node types based on the type of word (but it is unclear what it corresponds to)
     # graph_reduced has the 4 basic node types.
-    g = pickle.load(open(os.path.join(data_folder, 'graph_reduced.pickle'), "rb")).to(torch.device("cpu"))
+    g = pickle.load(open(os.patorch.join(data_folder, 'graph_reduced.pickle'), "rb")).to(torch.device("cpu"))
 
     # In[14]:
     labels = g.nodes['word'].data['features'][:, -1].cpu()
@@ -737,11 +922,11 @@ def load_kaggle_shoppers_data(args):
 
     # In[13]:r
 
-    G = pickle.load(open(os.path.join(data_folder, 'graph_0.001.pickle'), "rb")).to(torch.device("cpu"))
+    G = pickle.load(open(os.patorch.join(data_folder, 'graph_0.001.pickle'), "rb")).to(torch.device("cpu"))
 
     # In[14]:
 
-    labels = pickle.load(open(os.path.join(data_folder, 'labels.pickle'), "rb"))
+    labels = pickle.load(open(os.patorch.join(data_folder, 'labels.pickle'), "rb"))
 
     # In[15]:
 
@@ -803,11 +988,11 @@ def load_imdb_prexiang_preprocessed_data(args):
     # load to cpu for very large graphs
     file='dgl-neptune-dataset.pickle'
 
-    dataset=pickle.load(open(os.path.join(data_folder, file), "rb"))
+    dataset=pickle.load(open(os.patorch.join(data_folder, file), "rb"))
     G=dataset.g
 
     if args.use_node_motifs:
-        node_motifs = pickle.load(open(os.path.join(data_folder, 'node_motifs.pickle'), "rb"))
+        node_motifs = pickle.load(open(os.patorch.join(data_folder, 'node_motifs.pickle'), "rb"))
         for ntype in G.ntypes:
             G.nodes[ntype].data['motifs'] = node_motifs[ntype].float()
         G=keep_frequent_motifs(G)
@@ -868,10 +1053,10 @@ def load_imdb_kge_preprocessed_data(args):
     # In[13]:
     # load to cpu for very large graphs
     if args.few_shot:
-        edge_list = pickle.load(open(os.path.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
+        edge_list = pickle.load(open(os.patorch.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
         G = dgl.heterograph(edge_list)
     else:
-        edge_list = pickle.load(open(os.path.join(data_folder, 'edge_list.pickle'), "rb"))
+        edge_list = pickle.load(open(os.patorch.join(data_folder, 'edge_list.pickle'), "rb"))
         G = dgl.heterograph(edge_list)
 
     if args.few_shot:
@@ -909,10 +1094,10 @@ def load_oag_kge_preprocessed_data(args):
     # In[13]:
     # load to cpu for very large graphs
     if args.few_shot:
-        edge_list = pickle.load(open(os.path.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
+        edge_list = pickle.load(open(os.patorch.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
         G = dgl.heterograph(edge_list)
     else:
-        G = pickle.load(open(os.path.join(data_folder, 'graph.pickle'), "rb"))
+        G = pickle.load(open(os.patorch.join(data_folder, 'graph.pickle'), "rb"))
 
     create_edge_graph_splits_kge(G, 0.975-args.test_edge_split, 0.025,data_folder)
     print(G)
@@ -946,10 +1131,10 @@ def load_oag_na_kge_preprocessed_data(args):
     # In[13]:
     # load to cpu for very large graphs
     if args.few_shot:
-        edge_list = pickle.load(open(os.path.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
+        edge_list = pickle.load(open(os.patorch.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
         G = dgl.heterograph(edge_list)
     else:
-        G = pickle.load(open(os.path.join(data_folder, 'graph_na.pickle'), "rb"))
+        G = pickle.load(open(os.patorch.join(data_folder, 'graph_na.pickle'), "rb"))
 
     create_edge_graph_splits_kge(G, 0.975-args.test_edge_split, 0.025,data_folder)
     print(G)
@@ -981,10 +1166,10 @@ def load_dblp_kge_preprocessed_data(args):
     # In[13]:
     # load to cpu for very large graphs
     if args.few_shot:
-        edge_list = pickle.load(open(os.path.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
+        edge_list = pickle.load(open(os.patorch.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
         G = dgl.heterograph(edge_list)
     else:
-        edge_list = pickle.load(open(os.path.join(data_folder, 'edge_list.pickle'), "rb"))
+        edge_list = pickle.load(open(os.patorch.join(data_folder, 'edge_list.pickle'), "rb"))
         G = dgl.heterograph(edge_list)
 
     if args.few_shot:
@@ -1019,16 +1204,16 @@ def load_dblp_few_edge_shot_preprocessed_data(args):
 
     # In[13]:
     # load to cpu for very large graphs
-    edge_list = pickle.load(open(os.path.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
+    edge_list = pickle.load(open(os.patorch.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
     G = dgl.heterograph(edge_list)
-    features = pickle.load(open(os.path.join(data_folder, 'features.pickle'), "rb"))
+    features = pickle.load(open(os.patorch.join(data_folder, 'features.pickle'), "rb"))
     for ntype in features.keys():
         G.nodes[ntype].data['h_f'] = features[ntype]
     train_g, valid_g, test_g, train_edges, valid_edges, test_edges = create_edge_few_shot_splits(G,data_folder,
                                                                                                  etype=['writted_by_3','3_writes'],K=args.k_shot_edge)
 
     if args.use_node_motifs:
-        node_motifs = pickle.load(open(os.path.join(data_folder, 'node_motifs.pickle'), "rb"))
+        node_motifs = pickle.load(open(os.patorch.join(data_folder, 'node_motifs.pickle'), "rb"))
         for ntype in G.ntypes:
             G.nodes[ntype].data['motifs'] = node_motifs[ntype].float()
         G = keep_frequent_motifs(G)
@@ -1043,7 +1228,7 @@ def load_dblp_few_edge_shot_preprocessed_data(args):
         metapaths['director'] = ['directed', 'directed_by'] * 2
         metapaths['movie'] = ['played_by', 'played'] * 2
 
-    labels = pickle.load(open(os.path.join(data_folder, 'labels.pickle'), "rb"))
+    labels = pickle.load(open(os.patorch.join(data_folder, 'labels.pickle'), "rb"))
 
     if args.splitpct is not None:
         if args.splitpct==0.1:
@@ -1121,9 +1306,9 @@ def load_imdb_few_edge_shot_preprocessed_data(args):
 
     # In[13]:
     # load to cpu for very large graphs
-    edge_list = pickle.load(open(os.path.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
+    edge_list = pickle.load(open(os.patorch.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
     G = dgl.heterograph(edge_list)
-    features = pickle.load(open(os.path.join(data_folder, 'features.pickle'), "rb"))
+    features = pickle.load(open(os.patorch.join(data_folder, 'features.pickle'), "rb"))
     for ntype in features.keys():
         G.nodes[ntype].data['h_f'] = features[ntype]
 
@@ -1131,7 +1316,7 @@ def load_imdb_few_edge_shot_preprocessed_data(args):
                                                                                                  etype=['Drama_directed_by','directed_Drama'],K=args.k_shot_edge)
 
     if args.use_node_motifs:
-        node_motifs = pickle.load(open(os.path.join(data_folder, 'node_motifs.pickle'), "rb"))
+        node_motifs = pickle.load(open(os.patorch.join(data_folder, 'node_motifs.pickle'), "rb"))
         for ntype in G.ntypes:
             G.nodes[ntype].data['motifs'] = node_motifs[ntype].float()
         G = keep_frequent_motifs(G)
@@ -1146,7 +1331,7 @@ def load_imdb_few_edge_shot_preprocessed_data(args):
         metapaths['director'] = ['directed', 'directed_by'] * 2
         metapaths['movie'] = ['played_by', 'played'] * 2
 
-    labels = pickle.load(open(os.path.join(data_folder, 'labels.pickle'), "rb"))
+    labels = pickle.load(open(os.patorch.join(data_folder, 'labels.pickle'), "rb"))
 
     if args.splitpct is not None:
         if args.splitpct==0.1:
@@ -1224,10 +1409,10 @@ def load_oag_univ_preprocessed_data(args):
     # In[13]:
     # load to cpu for very large graphs
     if args.few_shot:
-        edge_list = pickle.load(open(os.path.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
+        edge_list = pickle.load(open(os.patorch.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
         G = dgl.heterograph(edge_list)
     else:
-        G = pickle.load(open(os.path.join(data_folder, 'graph.pickle'), "rb"))
+        G = pickle.load(open(os.patorch.join(data_folder, 'graph.pickle'), "rb"))
     for ntype in G.ntypes:
         if G.nodes[ntype].data.get("emb", None) is not None:
             G.nodes[ntype].data['h_f'] =  G.nodes[ntype].data['emb']
@@ -1239,7 +1424,7 @@ def load_oag_univ_preprocessed_data(args):
                                                                                                   data_folder)
 
     if args.use_node_motifs:
-        node_motifs = pickle.load(open(os.path.join(data_folder, 'node_motifs.pickle'), "rb"))
+        node_motifs = pickle.load(open(os.patorch.join(data_folder, 'node_motifs.pickle'), "rb"))
         for ntype in G.ntypes:
             G.nodes[ntype].data['motifs'] = node_motifs[ntype].float()
         G = keep_frequent_motifs(G)
@@ -1254,7 +1439,7 @@ def load_oag_univ_preprocessed_data(args):
         metapaths['director'] = ['directed', 'directed_by'] * 2
         metapaths['movie'] = ['played_by', 'played'] * 2
 
-    labels = pickle.load(open(os.path.join(data_folder, 'labels.pickle'), "rb"))
+    labels = pickle.load(open(os.patorch.join(data_folder, 'labels.pickle'), "rb"))
     labels=labels.todense()
     if args.splitpct is not None:
         train_idx,val_idx,test_idx=create_label_split(labels.shape[0],args.splitpct)
@@ -1321,10 +1506,10 @@ def load_oag_na_univ_preprocessed_data(args):
     # In[13]:
     # load to cpu for very large graphs
     if args.few_shot:
-        edge_list = pickle.load(open(os.path.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
+        edge_list = pickle.load(open(os.patorch.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
         G = dgl.heterograph(edge_list)
     else:
-        G = pickle.load(open(os.path.join(data_folder, 'graph_na.pickle'), "rb"))
+        G = pickle.load(open(os.patorch.join(data_folder, 'graph_na.pickle'), "rb"))
     for ntype in G.ntypes:
         if G.nodes[ntype].data.get("emb", None) is not None:
             G.nodes[ntype].data['h_f'] =  G.nodes[ntype].data['emb']
@@ -1336,7 +1521,7 @@ def load_oag_na_univ_preprocessed_data(args):
                                                                                                   data_folder)
 
     if args.use_node_motifs:
-        node_motifs = pickle.load(open(os.path.join(data_folder, 'node_motifs.pickle'), "rb"))
+        node_motifs = pickle.load(open(os.patorch.join(data_folder, 'node_motifs.pickle'), "rb"))
         for ntype in G.ntypes:
             G.nodes[ntype].data['motifs'] = node_motifs[ntype].float()
         G = keep_frequent_motifs(G)
@@ -1351,7 +1536,7 @@ def load_oag_na_univ_preprocessed_data(args):
         metapaths['director'] = ['directed', 'directed_by'] * 2
         metapaths['movie'] = ['played_by', 'played'] * 2
 
-    labels = pickle.load(open(os.path.join(data_folder, 'labels.pickle'), "rb"))
+    labels = pickle.load(open(os.patorch.join(data_folder, 'labels.pickle'), "rb"))
     labels=labels.todense()
     if args.splitpct is not None:
         train_idx,val_idx,test_idx=create_label_split(labels.shape[0],args.splitpct)
@@ -1433,6 +1618,7 @@ def load_std_het_full_univ_data(args):
                                                                                               0.975 - args.test_edge_split,
                                                                                               0.025,
                                                                                               data_folder)
+
     return train_idx, test_idx, val_idx, labels, category, num_classes, featless_node_types, metapaths, \
            train_edges, test_edges, valid_edges, train_g, valid_g, test_g
 
@@ -1588,7 +1774,7 @@ def load_acm_univ_data(args):
                                                                                               0.025,
                                                                                               data_folder)
     if args.use_node_motifs:
-        node_motifs = pickle.load(open(os.path.join(data_folder, 'node_motifs.pickle'), "rb"))
+        node_motifs = pickle.load(open(os.patorch.join(data_folder, 'node_motifs.pickle'), "rb"))
         for ntype in G.ntypes:
             G.nodes[ntype].data['motifs'] = node_motifs[ntype].float()
         G = keep_frequent_motifs(G)
@@ -1665,11 +1851,11 @@ def load_imdb_univ_preprocessed_data(args):
     # In[13]:
     # load to cpu for very large graphs
     #if args.few_shot:
-    #    edge_list = pickle.load(open(os.path.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
+    #    edge_list = pickle.load(open(os.patorch.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
     #    G = dgl.heterograph(edge_list)
-    edge_list = pickle.load(open(os.path.join(data_folder, 'edge_list.pickle'), "rb"))
+    edge_list = pickle.load(open(os.patorch.join(data_folder, 'edge_list.pickle'), "rb"))
     G = dgl.heterograph(edge_list)
-    features = pickle.load(open(os.path.join(data_folder, 'features.pickle'), "rb"))
+    features = pickle.load(open(os.patorch.join(data_folder, 'features.pickle'), "rb"))
     for ntype in features.keys():
         G.nodes[ntype].data['h_f'] = features[ntype]
     #if args.few_shot:
@@ -1679,7 +1865,7 @@ def load_imdb_univ_preprocessed_data(args):
                                                                                                   data_folder)
 
     if args.use_node_motifs:
-        node_motifs = pickle.load(open(os.path.join(data_folder, 'node_motifs.pickle'), "rb"))
+        node_motifs = pickle.load(open(os.patorch.join(data_folder, 'node_motifs.pickle'), "rb"))
         for ntype in G.ntypes:
             G.nodes[ntype].data['motifs'] = node_motifs[ntype].float()
         G = keep_frequent_motifs(G)
@@ -1694,7 +1880,7 @@ def load_imdb_univ_preprocessed_data(args):
         metapaths['director'] = ['directed', 'directed_by'] * 2
         metapaths['movie'] = ['played_by', 'played'] * 2
 
-    labels = pickle.load(open(os.path.join(data_folder, 'labels.pickle'), "rb"))
+    labels = pickle.load(open(os.patorch.join(data_folder, 'labels.pickle'), "rb"))
 
     if args.splitpct is not None:
         if args.splitpct==0.1:
@@ -1773,12 +1959,12 @@ def load_dblp_univ_preprocessed_data(args):
     # In[13]:
     # load to cpu for very large graphs
     if args.few_shot:
-        edge_list = pickle.load(open(os.path.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
+        edge_list = pickle.load(open(os.patorch.join(data_folder, 'k_shot_edge_list.pickle'), "rb"))
         G = dgl.heterograph(edge_list)
     else:
-        edge_list = pickle.load(open(os.path.join(data_folder, 'edge_list.pickle'), "rb"))
+        edge_list = pickle.load(open(os.patorch.join(data_folder, 'edge_list.pickle'), "rb"))
         G = dgl.heterograph(edge_list)
-    features = pickle.load(open(os.path.join(data_folder, 'features.pickle'), "rb"))
+    features = pickle.load(open(os.patorch.join(data_folder, 'features.pickle'), "rb"))
     for ntype in features.keys():
         G.nodes[ntype].data['h_f'] = features[ntype]
     if args.few_shot:
@@ -1801,7 +1987,7 @@ def load_dblp_univ_preprocessed_data(args):
                                                                                                   data_folder)
 
     if args.use_node_motifs:
-        node_motifs = pickle.load(open(os.path.join(data_folder, 'node_motifs.pickle'), "rb"))
+        node_motifs = pickle.load(open(os.patorch.join(data_folder, 'node_motifs.pickle'), "rb"))
         for ntype in G.ntypes:
             G.nodes[ntype].data['motifs'] = node_motifs[ntype].float()
         G = keep_frequent_motifs(G)
@@ -1817,7 +2003,7 @@ def load_dblp_univ_preprocessed_data(args):
         metapaths['conference'] = ['includes', 'writted_by', 'writes', 'prereseted_in'] * multiplicity
         metapaths['author'] = ['writes','contains','contained_by', 'writted_by'] * multiplicity
 
-    labels = pickle.load(open(os.path.join(data_folder, 'labels.pickle'), "rb"))
+    labels = pickle.load(open(os.patorch.join(data_folder, 'labels.pickle'), "rb"))
 
     #train_val_test_idx = np.load(data_folder + 'train_val_test_idx_kfold-' + str(args.k_fold) + '.npz')
     train_val_test_idx = np.load(data_folder + 'train_val_test_idx.npz')
@@ -1862,7 +2048,7 @@ def re_e_list(edge_list,folder):
     for k in edge_list.keys():
         nk=(k[0],k[0]+"_"+k[1]+"_"+k[2],k[2])
         n_edge_list[nk]=edge_list[k]
-    pickle.dump(n_edge_list, open(os.path.join(folder, "edge_list.pickle"), "wb"),
+    pickle.dump(n_edge_list, open(os.patorch.join(folder, "edge_list.pickle"), "wb"),
                 protocol=4);
     return n_edge_list
 def load_drkg_univ_data(args):
@@ -1938,7 +2124,7 @@ def load_drkg_univ_data(args):
     #train_g, valid_g, test_g, train_edges, valid_edges, test_edges = create_edge_graph_splits(G, 0.95, 0.025,
     #                                                                                              data_folder)
 
-    splits_dir=pickle.load(open(os.path.join(data_folder, 'splits_dir.pickle'), "rb"))
+    splits_dir=pickle.load(open(os.patorch.join(data_folder, 'splits_dir.pickle'), "rb"))
 
     train_g=splits_dir['train_g']
     valid_g=splits_dir['valid_g']
@@ -1948,7 +2134,7 @@ def load_drkg_univ_data(args):
     test_edges=splits_dir['test_edges']
     G=train_g
     if args.use_node_motifs:
-        node_motifs = pickle.load(open(os.path.join(data_folder, 'node_motifs.pickle'), "rb"))
+        node_motifs = pickle.load(open(os.patorch.join(data_folder, 'node_motifs.pickle'), "rb"))
         for ntype in G.ntypes:
             G.nodes[ntype].data['motifs'] = node_motifs[ntype].float()
         G = keep_frequent_motifs(G)
@@ -2017,7 +2203,7 @@ def load_drkg_edge_few_shot_data(args):
                 edge_dictionary[etype] += [pair]
             else:
                 edge_dictionary[etype] = [pair]
-        pickle.dump(entity_dictionary, open(os.path.join("../data/drkg/drkg/", "drkg_entity_id_map.pickle"), "wb"),
+        pickle.dump(entity_dictionary, open(os.patorch.join("../data/drkg/drkg/", "drkg_entity_id_map.pickle"), "wb"),
                     protocol=4);
         graph = dgl.heterograph(edge_dictionary)
         return graph
@@ -2051,7 +2237,7 @@ def load_drkg_edge_few_shot_data(args):
     train_g, valid_g, test_g, train_edges, valid_edges, test_edges = create_edge_graph_splits(G, 1, 0,
                                                                                                   data_folder)
     '''
-    splits_dir=pickle.load(open(os.path.join(data_folder, 'complete_splits_dir.pickle'), "rb"))
+    splits_dir=pickle.load(open(os.patorch.join(data_folder, 'complete_splits_dir.pickle'), "rb"))
 
     train_g=splits_dir['train_g']
     valid_g=splits_dir['valid_g']
@@ -2061,7 +2247,7 @@ def load_drkg_edge_few_shot_data(args):
     test_edges=splits_dir['test_edges']
     G=train_g
     if args.use_node_motifs:
-        node_motifs = pickle.load(open(os.path.join(data_folder, 'node_motifs.pickle'), "rb"))
+        node_motifs = pickle.load(open(os.patorch.join(data_folder, 'node_motifs.pickle'), "rb"))
         for ntype in G.ntypes:
             G.nodes[ntype].data['motifs'] = node_motifs[ntype].float()
         G = keep_frequent_motifs(G)
@@ -2115,13 +2301,13 @@ def load_query_biodata_univ_data(args):
     data_folder = "../data/query_biodata/"
 
     # In[13]:
-    #edge_list = pickle.load(open(os.path.join(data_folder, 'edge_list.pickle'), "rb"))
+    #edge_list = pickle.load(open(os.patorch.join(data_folder, 'edge_list.pickle'), "rb"))
     #G = dgl.heterograph(edge_list)
 
     #train_g, valid_g, test_g, train_edges, valid_edges, test_edges = create_edge_graph_splits(G, 0.95, 0.025,
     #                                                                                              data_folder)
 
-    splits_dir=pickle.load(open(os.path.join(data_folder, 'splits_dir.pickle'), "rb"))
+    splits_dir=pickle.load(open(os.patorch.join(data_folder, 'splits_dir.pickle'), "rb"))
 
     train_g=splits_dir['train_g']
     valid_g=splits_dir['valid_g']
@@ -2131,7 +2317,7 @@ def load_query_biodata_univ_data(args):
     test_edges=splits_dir['test_edges']
     G=train_g
     if args.use_node_motifs:
-        node_motifs = pickle.load(open(os.path.join(data_folder, 'node_motifs.pickle'), "rb"))
+        node_motifs = pickle.load(open(os.patorch.join(data_folder, 'node_motifs.pickle'), "rb"))
         for ntype in G.ntypes:
             G.nodes[ntype].data['motifs'] = node_motifs[ntype].float()
         G = keep_frequent_motifs(G)
@@ -2186,14 +2372,14 @@ def load_imdb_preprocessed_data(args):
 
     # In[13]:
     # load to cpu for very large graphs
-    edge_list = pickle.load(open(os.path.join(data_folder, 'edge_list.pickle'), "rb"))
+    edge_list = pickle.load(open(os.patorch.join(data_folder, 'edge_list.pickle'), "rb"))
     G = dgl.heterograph(edge_list)
 
-    features = pickle.load(open(os.path.join(data_folder, 'features.pickle'), "rb"))
+    features = pickle.load(open(os.patorch.join(data_folder, 'features.pickle'), "rb"))
     for ntype in features.keys():
         G.nodes[ntype].data['h_f'] = features[ntype]
     if args.use_node_motifs:
-        node_motifs = pickle.load(open(os.path.join(data_folder, 'node_motifs.pickle'), "rb"))
+        node_motifs = pickle.load(open(os.patorch.join(data_folder, 'node_motifs.pickle'), "rb"))
         for ntype in G.ntypes:
             G.nodes[ntype].data['motifs'] = node_motifs[ntype].float()
         G=keep_frequent_motifs(G)
@@ -2205,7 +2391,7 @@ def load_imdb_preprocessed_data(args):
         metapaths['director'] = ['directed','directed_by'] * 2
         metapaths['movie'] = ['played_by', 'played'] * 2
 
-    labels = pickle.load(open(os.path.join(data_folder, 'labels.pickle'), "rb"))
+    labels = pickle.load(open(os.patorch.join(data_folder, 'labels.pickle'), "rb"))
 
     if args.k_fold>0:
         train_val_test_idx = np.load(data_folder + 'train_val_test_idx_kfold-'+str(args.k_fold)+'.npz')
@@ -2270,19 +2456,19 @@ def load_dblp_preprocessed_data(args):
 
     # In[13]:
     # load to cpu for very large graphs
-    edge_list=pickle.load(open(os.path.join(data_folder, 'edge_list.pickle'), "rb"))
+    edge_list=pickle.load(open(os.patorch.join(data_folder, 'edge_list.pickle'), "rb"))
     G = dgl.heterograph(edge_list)
-    features = pickle.load(open(os.path.join(data_folder, 'features.pickle'), "rb"))
+    features = pickle.load(open(os.patorch.join(data_folder, 'features.pickle'), "rb"))
     for ntype in features.keys():
         G.nodes[ntype].data['h_f'] =features[ntype]
 
     if args.use_node_motifs:
-        node_motifs = pickle.load(open(os.path.join(data_folder, 'node_motifs.pickle'), "rb"))
+        node_motifs = pickle.load(open(os.patorch.join(data_folder, 'node_motifs.pickle'), "rb"))
         for ntype in G.ntypes:
             G.nodes[ntype].data['motifs'] = node_motifs[ntype].float()
         G = keep_frequent_motifs(G)
         G = motif_distribution_to_zero_one(G,args)
-    labels = pickle.load(open(os.path.join(data_folder, 'labels.pickle'), "rb"))
+    labels = pickle.load(open(os.patorch.join(data_folder, 'labels.pickle'), "rb"))
     train_val_test_idx = np.load(data_folder + 'train_val_test_idx.npz')
 
     print(G)
@@ -2343,7 +2529,7 @@ def load_imdb_data(args):
 
     # In[13]:
     # load to cpu for very large graphs
-    G = pickle.load(open(os.path.join(data_folder, 'graph_red.pickle'), "rb")).to(torch.device("cpu"))
+    G = pickle.load(open(os.patorch.join(data_folder, 'graph_red.pickle'), "rb")).to(torch.device("cpu"))
 
     # extract adult label from graph
     label_type='genre'

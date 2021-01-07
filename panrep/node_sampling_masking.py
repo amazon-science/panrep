@@ -35,7 +35,22 @@ def node_masker(old_g, num_nodes, masked_node_types,node_masking,use_reconstruct
                 g.nodes[ntype].data['features'][masked_ids,:] = new_val
 
     return masked_nodes,g
+class NegativeSampler(object):
+    def __init__(self, g, k, neg_share=False):
+        self.weights = g.in_degrees().float() ** 0.75
+        self.k = k
+        self.neg_share = neg_share
 
+    def __call__(self, g, eids):
+        src, _ = g.find_edges(eids)
+        n = len(src)
+        if self.neg_share and n % self.k == 0:
+            dst = self.weights.multinomial(n, replacement=True)
+            dst = dst.view(-1, 1, self.k).expand(-1, self.k, -1).flatten()
+        else:
+            dst = self.weights.multinomial(n*self.k, replacement=True)
+        src = src.repeat_interleave(self.k)
+        return src, dst
 def node_masker_mb(embeddings, num_nodes, masked_node_types,node_masking):
     masked_nodes={}
     if not node_masking:
@@ -160,6 +175,98 @@ class LinkPredictorEvalSampler:
         #print('overal sampling time')
         #print(block_sample_time)
         return seeds, blocks
+class NeighborSampler:
+    """Neighbor sampler
+    Parameters
+    ----------
+    g : DGLHeterograph
+        Full graph
+    target_idx : tensor
+        The target training node IDs in g
+    fanouts : list of int
+        Fanout of each hop starting from the seed nodes. If a fanout is None,
+        sample full neighbors.
+    """
+    def __init__(self, g, target_idx, fanouts):
+        self.g = g
+        self.target_idx = target_idx
+        self.fanouts = fanouts
+
+    """Do neighbor sample
+    Parameters
+    ----------
+    seeds :
+        Seed nodes
+    Returns
+    -------
+    tensor
+        Seed nodes, also known as target nodes
+    blocks
+        Sampled subgraphs
+    """
+    def sample_blocks(self, seeds):
+        blocks = []
+        etypes = []
+        norms = []
+        ntypes = []
+        seeds = torch.tensor(seeds).long()
+        cur = self.target_idx[seeds]
+        for fanout in self.fanouts:
+            if fanout is None or fanout == -1:
+                frontier = dgl.in_subgraph(self.g, cur)
+            else:
+                frontier = dgl.sampling.sample_neighbors(self.g, cur, fanout)
+            etypes = self.g.edata[dgl.ETYPE][frontier.edata[dgl.EID]]
+            block = dgl.to_block(frontier, cur)
+            block.srcdata[dgl.NTYPE] = self.g.ndata[dgl.NTYPE][block.srcdata[dgl.NID]]
+            block.srcdata['type_id'] = self.g.ndata[dgl.NID][block.srcdata[dgl.NID]]
+            block.edata['etype'] = etypes
+            cur = block.srcdata[dgl.NID]
+            blocks.insert(0, block)
+        # For the CR decoder
+        blocks[-1].dstdata[dgl.NTYPE] = self.g.ndata[dgl.NTYPE][blocks[-1].dstdata[dgl.NID]]
+        blocks[-1].dstdata['type_id'] = self.g.ndata[dgl.NID][blocks[-1].dstdata[dgl.NID]]
+        return seeds, blocks
+class NeighborEdgeSampler:
+    """Neighbor sampler
+    Parameters
+    ----------
+    g : DGLHeterograph
+        Full graph
+    target_idx : tensor
+        The target training node IDs in g
+    fanouts : list of int
+        Fanout of each hop starting from the seed nodes. If a fanout is None,
+        sample full neighbors.
+    """
+    def __init__(self,sampler):
+        self.sampler=sampler
+
+    """Do neighbor sample
+    Parameters
+    ----------
+    seeds :
+        Seed nodes
+    Returns
+    -------
+    tensor
+        Seed nodes, also known as target nodes
+    blocks
+        Sampled subgraphs
+    """
+
+    def sample_blocks(self, g, seed_nodes, exclude_eids=None):
+        blocks=self.sampler.sample_blocks(g, seed_nodes, exclude_eids)
+
+        for i in range(len(blocks)):
+
+            blocks[i].srcdata[dgl.NTYPE] = g.ndata[dgl.NTYPE][blocks[i].srcdata[dgl.NID]]
+            blocks[i].srcdata['type_id'] = g.ndata[dgl.NID][blocks[i].srcdata[dgl.NID]]
+            blocks[i].edata['etype'] = g.edata[dgl.ETYPE][blocks[i].edata[dgl.EID]]
+        # For the CR decoder
+        blocks[-1].dstdata[dgl.NTYPE] = g.ndata[dgl.NTYPE][blocks[-1].dstdata[dgl.NID]]
+        blocks[-1].dstdata['type_id'] = g.ndata[dgl.NID][blocks[-1].dstdata[dgl.NID]]
+        return blocks
 
 class InfomaxNodeRecNeighborSampler:
     def __init__(self, g, fanouts, device, full_neighbor=False,category=None):

@@ -4,7 +4,7 @@ from functools import partial
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
-
+from dgl.nn import RelGraphConv
 from layers import RelGraphConvHetero, EmbeddingLayer, RelGraphAttentionHetero,MiniBatchRelGraphEmbed
 
 
@@ -84,6 +84,64 @@ class EncoderRelGraphAttentionHetero(nn.Module):
         for layer in self.layers:
             h = layer(g, h)
         return h
+class EncoderRelGraphConvHomo(nn.Module):
+    def __init__(self,
+                 device,
+                 num_nodes,
+                 h_dim,
+                 num_rels,
+                 num_bases=None,
+                 num_hidden_layers=1,
+                 dropout=0,
+                 use_self_loop=False,
+                 low_mem=False,
+                 layer_norm=False):
+        super(EncoderRelGraphConvHomo, self).__init__()
+        self.device = torch.device(device)
+        self.num_nodes = num_nodes
+        self.h_dim = h_dim
+        self.num_rels = num_rels
+        self.num_bases = None if num_bases < 0 else num_bases
+        self.num_hidden_layers = num_hidden_layers
+        self.dropout = dropout
+        self.use_self_loop = use_self_loop
+        self.low_mem = low_mem
+        self.layer_norm = layer_norm
+
+        self.layers = nn.ModuleList()
+        # i2h
+        self.layers.append(RelGraphConv(
+            self.h_dim, self.h_dim, self.num_rels, "basis",
+            self.num_bases, activation=F.relu, self_loop=self.use_self_loop,
+            low_mem=self.low_mem, dropout=self.dropout, layer_norm=layer_norm))
+        # h2h
+        for idx in range(self.num_hidden_layers):
+            self.layers.append(RelGraphConv(
+                self.h_dim, self.h_dim, self.num_rels, "basis",
+                self.num_bases, activation=F.relu, self_loop=self.use_self_loop,
+                low_mem=self.low_mem, dropout=self.dropout, layer_norm=layer_norm))
+        # h2o
+        #self.layers.append(RelGraphConv(
+        #    self.h_dim, self.out_dim, self.num_rels, "basis",
+        #    self.num_bases, activation=None,
+        #    self_loop=self.use_self_loop,
+        #    low_mem=self.low_mem, layer_norm=layer_norm))
+
+    def forward(self, blocks, feats, corrupt=False, norm=None):
+        h = feats
+        if corrupt:
+            perm = torch.randperm(len(feats))
+            h = h[perm]
+        if blocks is None:
+            # full graph training
+            blocks = [self.g] * len(self.layers)
+        for layer, block in zip(self.layers, blocks):
+            block = block.to(self.device)
+            h = layer(block, h, block.edata['etype'], block.edata['norm'])
+        return h
+
+
+
 
 
 class EncoderRelGraphConvHetero(nn.Module):
