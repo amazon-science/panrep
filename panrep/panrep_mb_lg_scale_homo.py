@@ -311,8 +311,7 @@ def finetune_panrep_for_node_classification(args, device, labels, metapaths,
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2norm)
     # training loop
     print("start finetuning training...")
-    forward_time = []
-    backward_time = []
+
     model.train()
     dur = []
     # cancel the link preidction and rw superivsion tasks since the batch graph sampled will not have
@@ -373,7 +372,7 @@ def finetune_panrep_for_node_classification(args, device, labels, metapaths,
     test_acc = torch.sum(test_logits.argmax(dim=1) == labels[test_seeds].cpu()).item() / len(test_seeds)
 
 
-    return backward_time, forward_time, labels, model, test_acc
+    return model, test_acc
 
 def initialize_sampler(g, batch_size, args, target_idx, evaluate_panrep =False):
     if args.use_link_prediction:
@@ -596,7 +595,7 @@ def _fit(args):
             micro_str=""
 
         ## Finetune PanRep for node classification
-        backward_time, forward_time, labels, model,test_acc = finetune_panrep_for_node_classification(args, device,
+        model,test_acc = finetune_panrep_for_node_classification(args, device,
                                                                                       labels,
                                                                                       metapaths, model, multilabel,
                                                                                       num_classes,
@@ -610,24 +609,25 @@ def _fit(args):
         idx_sorted=torch.argsort(test_seeds)
         universal_embeddings=universal_embeddings[idx_sorted]
         print("Test accuracy: {:4f}".format(test_acc))
-        print("Mean forward time: {:4f}".format(np.mean(forward_time[len(forward_time) // 4:])))
-        print("Mean backward time: {:4f}".format(np.mean(backward_time[len(backward_time) // 4:])))
 
-        feats = universal_embeddings
-        ## Test finetuned embeddings by training an mlp classifier
-        test_acc_ftembed= mlp_classifier(
-            feats, use_cuda, args.n_hidden, lr_d, args.num_epochs_downstream, multilabel, num_classes, labels, train_idx, val_idx, test_idx, device)
 
-        if svm_eval:
-            if multilabel:
-                labels_i = np.argmax(labels.cpu().numpy(), axis=1)
-            else:
-                labels_i = labels.cpu().numpy()
-            svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std,finmacro_str,finmicro_str = evaluate_results_nc(
-                feats[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
+        evaluate_prft_embeddings=False
+        if evaluate_prft_embeddings:
+            ## Test finetuned embeddings by training an mlp classifier
+            test_acc_ftembed= mlp_classifier(
+                universal_embeddings, use_cuda, args.n_hidden, lr_d, args.num_epochs_downstream, multilabel, num_classes, labels, train_idx, val_idx, test_idx, device)
+
+            if svm_eval:
+                if multilabel:
+                    labels_i = np.argmax(labels.cpu().numpy(), axis=1)
+                else:
+                    labels_i = labels.cpu().numpy()
+                svm_macro_f1_list, svm_micro_f1_list, nmi_mean, nmi_std, ari_mean, ari_std,finmacro_str,finmicro_str = evaluate_results_nc(
+                    universal_embeddings[test_idx].cpu().numpy(), labels_i[test_idx], num_classes=num_classes)
         else:
             finmacro_str=""
             finmicro_str=""
+            test_acc_ftembed=""
         return " | PanRep " +macro_str+" "+micro_str+" | Test acc  PanRepFT: {:4f} | ".format(test_acc)+\
                " " \
         "| Finetune "+finmacro_str+" "+finmicro_str+"PR MRR : "+pr_mrr+\
