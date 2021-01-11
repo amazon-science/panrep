@@ -403,7 +403,6 @@ def evaluation_link_prediction_wembeds(test_g,model, embeddings,train_edges,vali
 def evaluate_panrep_fn_for_node_classification(model, val_loader, device, labels, category, loss_func, multilabel=False):
     model.eval()
     total_acc=0
-    total_acc_auc=0
     total_loss = 0
     count=0
     for i, (seeds, blocks) in enumerate(val_loader):
@@ -424,13 +423,7 @@ def evaluate_panrep_fn_for_node_classification(model, val_loader, device, labels
         total_loss += loss.item() * len(seeds)
         pred = pred.cpu().numpy()
         count+=len(seeds)
-        try:
-            acc_auc = roc_auc_score(lbl.cpu().numpy(), pred)
-            total_acc_auc+=acc_auc
-        except ValueError:
-            acc_auc = -1
-            pass
-    return total_loss/count, total_acc/count,total_acc_auc/count
+    return total_loss/count, total_acc/count
 
 def evaluation_link_prediction(test_g,model,train_edges,valid_edges,test_edges,dim_size,eval_neg_cnt,n_layers,device):
     def transform_triplets(train_edges,etype2id,ntype2id):
@@ -960,10 +953,26 @@ class Dataset(th.utils.data.Dataset):
         y = self.labels[ID]
 
         return X, y
+def dcg_at_k(r, k):
+    r = np.asfarray(r)[:k]
+    if r.size:
+        return r[0] + np.sum(r[1:] / np.log2(np.arange(2, r.size + 1)))
+    return 0.
+
+def ndcg_at_k(r, k):
+    dcg_max = dcg_at_k(sorted(r, reverse=True), k)
+    if not dcg_max:
+        return 0.
+    return dcg_at_k(r, k) / dcg_max
+
+
 def _compute_acc(logits, labels, multilabel):
     if multilabel:
-        predicted_labels = th.sigmoid(logits).data > 0.5
-        return th.sum(predicted_labels.cpu() == labels.cpu()).item() / labels.numel()
+        valid_res = []
+        for ai, bi in zip(labels, logits.argsort(descending = True)):
+            valid_res += [(ai[bi.cpu().numpy()]).cpu().numpy()]
+        valid_ndcg = np.average([ndcg_at_k(resi, len(resi)) for resi in valid_res])
+        return valid_ndcg
     else:
         return th.sum(logits.argmax(dim=1).cpu() == labels.cpu()).item() / len(labels)
 def compute_acc(results, labels, multilabel):
@@ -975,7 +984,7 @@ def compute_acc(results, labels, multilabel):
     else:
         labels = labels.long()
         return (results == labels).float().sum() / len(results)
-def mlp_classifier(feats,use_cuda,n_hidden,lr_d,
+def mlp_classifier(args,feats,use_cuda,n_hidden,lr_d,
                    n_cepochs,multilabel,num_classes,
                    labels,train_idx,val_idx,test_idx,device
                    ,batch_size=512):
@@ -1030,28 +1039,34 @@ def mlp_classifier(feats,use_cuda,n_hidden,lr_d,
     if multilabel is False:
         loss_func = torch.nn.CrossEntropyLoss()
     else:
-        loss_func = torch.nn.BCEWithLogitsLoss()
+        if args.klloss:
+            loss_func = torch.nn.KLDivLoss(reduction='batchmean')
+        else:
+            loss_func = torch.nn.BCEWithLogitsLoss()
 
     for epoch in range(n_cepochs):
         for local_batch, local_labels in  training_generator:
             optimizer.zero_grad()
             logits = model(local_batch)
             local_labels =local_labels.to(device)
+            if args.klloss and multilabel:
+                logits=torch.log_softmax(logits.squeeze(), dim=-1)
             loss = loss_func(logits, (local_labels))
             loss.backward()
             optimizer.step()
-            pred = torch.sigmoid(logits).detach().cpu().numpy()
 
             #train_acc = compute_acc(results=pred, labels=local_labels, multilabel=multilabel)
-        pred = model(feats)
-        if multilabel is False:
-            pred = pred.argmax(dim=1)
-        else:
-            pred = pred
-        train_acc = compute_acc(results= pred[train_indices],labels=labels[train_indices],multilabel=multilabel)
+        if epoch%2==0:
+            pred = model(feats)
+            if multilabel is False:
+                pred = pred.argmax(dim=1)
+            else:
+                if args.klloss and multilabel:
+                    pred=torch.log_softmax(pred.squeeze(), dim=-1)
+            train_acc = compute_acc(results= pred[train_indices],labels=labels[train_indices],multilabel=multilabel)
 
-        val_acc = compute_acc(results=pred[valid_indices], labels=labels[valid_indices], multilabel=multilabel)
-        test_acc = compute_acc(results=pred[test_indices], labels=labels[test_indices], multilabel=multilabel)
+            val_acc = compute_acc(results=pred[valid_indices], labels=labels[valid_indices], multilabel=multilabel)
+            test_acc = compute_acc(results=pred[test_indices], labels=labels[test_indices], multilabel=multilabel)
 
 
         if best_val_acc < val_acc:

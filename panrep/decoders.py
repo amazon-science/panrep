@@ -1053,7 +1053,9 @@ class MutualInformationDiscriminatorHomo(nn.Module):
         self.average_across_node_types=average_across_node_types
         self.convex_combination_weight=convex_combination_weight
         self.global_summary=None
+        #reset every epoch
         # keep a global summary
+
         #self.positives
 
 
@@ -1062,14 +1064,18 @@ class MutualInformationDiscriminatorHomo(nn.Module):
         l1=0
         l2=0
         if self.average_across_node_types:
-            summary = torch.sigmoid(positives.mean(dim=0))
+            summary_batch=positives.mean(dim=0)
             if self.convex_combination_weight is not None:
                 if self.global_summary is not None :
+                    convex_combination_weight=self.convex_combination_weight
                     self.global_summary= \
-                        self.convex_combination_weight*self.global_summary.detach()+(1-self.convex_combination_weight)*summary
-                    summary=self.global_summary
+                        convex_combination_weight*summary_batch+(1-convex_combination_weight)*self.global_summary.detach()
                 else:
-                    self.global_summary=summary
+                    self.global_summary=summary_batch
+                summary_batch=self.global_summary
+
+            summary = torch.sigmoid(summary_batch)
+
 
             positive = self.discriminator(positives.mean(dim=0), summary)
             negative = self.discriminator(negatives.mean(dim=0), summary)

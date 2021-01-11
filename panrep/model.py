@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch as th
 import dgl.function as fn
 from encoders import EncoderRGCN,EncoderRelGraphConvHetero
-from node_supervision_tasks import NodeMotifDecoder,MultipleAttributeDecoder\
+from decoders import NodeMotifDecoder,MultipleAttributeDecoder\
     ,MutualInformationDiscriminator,LinkPredictor
 import dgl
 
@@ -144,12 +144,13 @@ class PanRepHomo(nn.Module):
                  embed_layer,
                  encoder,
                  decoders,
-                 classifier=None):
+                 classifier=None,output=False):
         super(PanRepHomo, self).__init__()
         self.decoders = decoders
         self.encoder = encoder
         self.classifier = classifier
         self.embed_layer=embed_layer
+        self.output=output
     def obtain_embeddings(self, p_blocks,node_feats):
 
         feats = self.embed_layer(p_blocks[0].srcdata[dgl.NID],
@@ -173,8 +174,9 @@ class PanRepHomo(nn.Module):
                 negative_infomax = self.encoder(p_blocks,feats,corrupt=True)
                 infomax_loss = decoderModel(positive, negative_infomax)
                 loss += infomax_loss
-                print("Infomax loss {}".format(
-                infomax_loss.detach()))
+                if  self.output:
+                    print("Infomax loss {}".format(
+                    infomax_loss.detach()))
 
             if decoderName=='crd':
                 reconstruct_loss = decoderModel(positive,
@@ -183,24 +185,28 @@ class PanRepHomo(nn.Module):
                                                 node_tids=p_blocks[-1].dstdata[dgl.NTYPE],
                                                 type_ids=p_blocks[-1].dstdata['type_id'])
                 loss += reconstruct_loss
-                print("Reconstruct loss {}".format(
+                if self.output:
+                    print("Reconstruct loss {}".format(
                 reconstruct_loss.detach()))
             if decoderName=='nmd':
                 motif_loss = decoderModel(p_blocks[-1],positive)
                 loss += motif_loss
-                print("Node motif loss {}".format(
+                if self.output:
+                    print("Node motif loss {}".format(
                 motif_loss.detach()))
             if decoderName=='lpd':
                 link_prediction_loss=decoderModel(g=p_blocks[-1], embed=positive,graphs=graphs)
                 loss += link_prediction_loss
                 if th.is_tensor(link_prediction_loss):
-                    print("Link prediction loss:{}".format(
+                    if self.output:
+                        print("Link prediction loss:{}".format(
                     link_prediction_loss.detach()))
             if decoderName=='mrwd' and rw_neighbors is not None:
                meta_loss=decoderModel.get_loss(g=p_blocks[-1], embed=positive,
                                                rw_neighbors=rw_neighbors)
                loss += meta_loss
-               print("meta_loss: {:.4f}".format(meta_loss.item()))
+               if self.output:
+                print("meta_loss: {:.4f}".format(meta_loss.item()))
 
         return loss
 

@@ -6,7 +6,7 @@ Code:
 """
 from evaluation import evaluation_link_prediction, \
     direct_eval_lppr_link_prediction, macro_micro_f1, evaluate_results_nc, \
-    mlp_classifier,compute_acc,evaluate_panrep_fn_for_node_classification
+    mlp_classifier,compute_acc
 from node_sampling_masking import  NegativeSampler,NeighborSampler,NeighborEdgeSampler
 import os
 from utils import calculate_entropy
@@ -26,7 +26,7 @@ from load_data import load_univ_homo_data,generate_rwalks
 from model import PanRepHomo
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader
-from node_supervision_tasks import MetapathRWalkerSupervision, \
+from decoders import MetapathRWalkerSupervision, \
     LinkPredictor,LinkPredictorLearnableEmbed, MutualInformationDiscriminatorHomo,LinkPredictorHomoLS,ClusterRecoverDecoderHomo
 from encoders import EncoderRelGraphConvHomo,EncoderHGT
 import torch.nn.functional as F
@@ -291,7 +291,10 @@ def finetune_panrep_for_node_classification(args, device, labels, metapaths,
     if multilabel is False:
         loss_func = torch.nn.CrossEntropyLoss()
     else:
-        loss_func = torch.nn.BCEWithLogitsLoss()
+        if args.klloss:
+            loss_func = torch.nn.KLDivLoss(reduction='batchmean')
+        else:
+            loss_func = torch.nn.BCEWithLogitsLoss()
     if use_cuda:
         model.cuda()
         model.classifier.cuda()
@@ -333,6 +336,8 @@ def finetune_panrep_for_node_classification(args, device, labels, metapaths,
                 blocks[j] = blocks[j].to(device)
             lbl = labels[seeds]
             logits=forward_function(blocks, node_feats)
+            if args.klloss:
+                logits=torch.log_softmax(logits.squeeze(), dim=-1)
 
             log_loss = loss_func(logits, lbl)
             if args.only_ssl:
@@ -343,33 +348,35 @@ def finetune_panrep_for_node_classification(args, device, labels, metapaths,
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            pred = torch.sigmoid(logits)
+            pred = (logits)
             if multilabel is False:
                 pred = pred.argmax(dim=1)
             else:
-                pred = pred
+                if args.klloss and multilabel:
+                    pred = torch.log_softmax(pred.squeeze(), dim=-1)
             train_acc = compute_acc(pred,lbl,multilabel)
-            #RGCN normalizes the results per edge type by scaling xiangs implementation scales each edge.
-            try:
-                train_acc_auc = roc_auc_score(lbl.cpu().numpy(), pred.detach().cpu().numpy())
-            except ValueError:
-                train_acc_auc = -1
+
             if i%50==0:
                 print(
-                "Epoch {:05d} | Batch {:03d} | Train Acc: {:.4f} |Train Acc AUC: {:.4f}| Train Loss: {:.4f} | Time: {:.4f}".
-                    format(epoch, i, train_acc, train_acc_auc, loss.item(), time.time() - batch_tic))
+                "Epoch {:05d} | Batch {:03d} | Train Acc: {:.4f} | Train Loss: {:.4f} | Time: {:.4f}".
+                    format(epoch, i, train_acc, loss.item(), time.time() - batch_tic))
 
         if epoch > 3:
             dur.append(time.time() - t0)
 
         val_logits, val_seeds=evaluate_prft(model, val_loader, node_feats,forward_function)
-        val_loss = F.cross_entropy(val_logits, labels[val_seeds].cpu()).item()
-        val_acc = torch.sum(val_logits.argmax(dim=1) == labels[val_seeds].cpu()).item() / len(val_seeds)
+        if args.klloss and multilabel:
+            val_logits = torch.log_softmax(val_logits.squeeze(), dim=-1)
+        val_loss = loss_func(val_logits, labels[val_seeds].cpu()).item()
+        val_acc = compute_acc((val_logits),labels[val_seeds],multilabel)
         print("Epoch {:05d} | Valid Acc: {:.4f} | Valid loss: {:.4f} | Time: {:.4f}".
               format(epoch, val_acc, val_loss, np.average(dur)))
     print()
+
     test_logits, test_seeds=evaluate_prft(model, test_loader, node_feats,forward_function)
-    test_acc = torch.sum(test_logits.argmax(dim=1) == labels[test_seeds].cpu()).item() / len(test_seeds)
+    if args.klloss and multilabel:
+        test_logits = torch.log_softmax(test_logits.squeeze(), dim=-1)
+    test_acc = compute_acc((test_logits), labels[test_seeds], multilabel)
 
 
     return model, test_acc
@@ -540,11 +547,12 @@ def _fit(args):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-
-            print("Train Loss: {:.4f} Epoch {:05d} | Batch {:03d}".format(loss.item(), epoch, i))
+            if i%100==0:
+                print("Train Loss: {:.4f} Epoch {:05d} | Batch {:03d}".format(loss.item(), epoch, i))
         if evaluate_panrep_decoders_during_training and epoch % evaluate_every == 0:
             eval_training_of_panrep(model=model, dataloader=valid_loader)
     print("end pretraining...")
+
 
     ## Obtain universal embeddings and evaluate
     if args.n_epochs>0:
@@ -579,11 +587,10 @@ def _fit(args):
             labels_i=np.argmax(labels.cpu().numpy(),axis=1)
         else:
             labels_i=labels.cpu().numpy()
-        lr_d=args.lr
         ## Test universal embeddings by training mlp classifier for node classification
         if args.n_epochs>0:
-            test_acc_prembed = mlp_classifier(
-            universal_embeddings, use_cuda, args.n_hidden, lr_d, args.num_epochs_downstream, multilabel, num_classes, labels,
+            test_acc_prembed = mlp_classifier(args,
+            universal_embeddings, use_cuda, args.num_hidden_downstream, args.lr_downstream, args.num_epochs_downstream, multilabel, num_classes, labels,
             train_idx, val_idx, test_idx, device, batch_size=args.batch_size_downstream)
         else:
             test_acc_prembed=0
@@ -614,8 +621,8 @@ def _fit(args):
         evaluate_prft_embeddings=False
         if evaluate_prft_embeddings:
             ## Test finetuned embeddings by training an mlp classifier
-            test_acc_ftembed= mlp_classifier(
-                universal_embeddings, use_cuda, args.n_hidden, lr_d, args.num_epochs_downstream, multilabel, num_classes, labels, train_idx, val_idx, test_idx, device)
+            test_acc_ftembed= mlp_classifier(args,
+                universal_embeddings, use_cuda, args.num_hidden_downstream, args.lr_downstream, args.num_epochs_downstream, multilabel, num_classes, labels, train_idx, val_idx, test_idx, device)
 
             if svm_eval:
                 if multilabel:
@@ -642,16 +649,15 @@ def fit(args):
             best results 700 hidden units so far
         '''
         args.splitpct = 0.1
-        n_epochs_list = [1]#[250,300]
-        n_hidden_list =[64]#[40,200,400]
-        n_layers_list = [0]
-        n_fine_tune_epochs_list= [3]#[20,50]#[30,50,150]
-        n_bases_list = [2]
-        lr_list = [1e-2]
-
-
+        n_epochs_list = [0]#[250,300]
+        n_hidden_list =[128,256,300]#[40,200,400]
+        n_layers_list = [0,1]
+        n_fine_tune_epochs_list= [100]#[20,50]#[30,50,150]
+        n_bases_list = [-1,2]
+        lr_list = [5e-3]
         dropout_list = [0.5]
         fanout_list = []
+
         test_edge_split_list = [-0.025]
         use_link_prediction_list = [False]
         use_clusterandrecover_loss_list =[False]#[False,True]
@@ -776,13 +782,12 @@ if __name__ == '__main__':
             help="number of training epochs for PanRep")
     parser.add_argument("-n_fine_tune_epochs", "--n-fine-tune-epochs", type=int, default=3,
             help="number of training epochs for PanRep-FT ")
-    parser.add_argument('--num-epochs-downstream', type=int, default=40)
-    parser.add_argument('--num-hidden-downstream', type=int, default=64)
+    parser.add_argument('--num-epochs-downstream', type=int, default=10)
+    parser.add_argument('--num-hidden-downstream', type=int, default=256)
     parser.add_argument('--batch_size_downstream', type=int, default=500)
-    parser.add_argument('--lr-downstream', type=float, default=0.003)
+    parser.add_argument('--lr-downstream', type=float, default=0.01)
     parser.add_argument("-negative_rate_rw", "--negative-rate-rw", type=int, default=4,
                         help="number of negative examples per positive link for metapathrw supervision")
-
     parser.add_argument("-negative_rate_lp", "--negative-rate-lp", type=int, default=5,
                         help="number of negative examples per positive link for link prediction supervision")
     parser.add_argument("-d", "--dataset", type=str, required=True,
@@ -820,8 +825,9 @@ if __name__ == '__main__':
 
     parser.add_argument("--low-mem", default=True, action='store_true',
                help="Whether use low mem RelGraphCov")
-
-    parser.add_argument("--batch-size", type=int, default=512,
+    parser.add_argument("--klloss", default=True, action='store_true',
+               help="Whether use klloss in multilabel")
+    parser.add_argument("--batch-size", type=int, default=1024,
             help="Mini-batch size. If -1, use full graph training.")
     parser.add_argument("--model_path", type=str, default=None,
             help='path for save the model')
@@ -835,7 +841,7 @@ if __name__ == '__main__':
     fp.add_argument('--testing', dest='validation', action='store_false')
     parser.set_defaults(validation=True)
 
-    args = parser.parse_args(['--dataset', 'ogbn-mag','--encoder', 'RGCN'])
+    args = parser.parse_args(['--dataset', 'oag_cs','--encoder', 'RGCN'])
 
 
     print(args)

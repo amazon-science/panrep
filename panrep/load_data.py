@@ -5,7 +5,7 @@ This file contains functions that help loading the different datasets in the req
 import os
 import pickle
 import random
-from os import listdir
+import dgl.function as fn
 # from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit
 import dgl
 import scipy.io
@@ -161,6 +161,120 @@ def load_few_edge_shot_hetero_data(args):
         raise NotImplementedError
     return train_idx,test_idx,val_idx,labels,category,num_classes,featless_node_types,rw_neighbors,\
             train_edges, test_edges, valid_edges, train_g, valid_g, test_g
+def load_oag_nc_lp(args):
+    dir='../data/oaggpt/oag_NN.dgl'
+    dataset = dgl.load_graphs(dir)[0]
+    hg = dataset[0]
+
+    # Construct author embeddings by averaging over their papers' embeddings.
+    hg.multi_update_all(
+        {'rev_AP_write_first': (fn.copy_src('emb', 'm'), fn.sum('m', 'h')),
+         'rev_AP_write_last': (fn.copy_src('emb', 'm'), fn.sum('m', 'h')),
+         'rev_AP_write_other': (fn.copy_src('emb', 'm'), fn.sum('m', 'h')),},
+        'sum')
+    cnts = hg.in_degrees(etype='rev_AP_write_first') + hg.in_degrees(etype='rev_AP_write_last') + hg.in_degrees(etype='rev_AP_write_other')
+    cnts = cnts.reshape(-1, 1)
+    hg.nodes['author'].data['emb'] = hg.nodes['author'].data['h'] / cnts
+
+    # Construct labels of paper nodes
+    ss, dd = hg.edges(etype=('field', 'rev_PF_in_L2', 'paper'))
+    ssu_, ssu = torch.unique(ss, return_inverse=True)
+    print('Full label set size:', len(ssu_))
+    paper_labels = torch.zeros(hg.num_nodes('paper'), len(ssu_), dtype=torch.bool)
+    paper_labels[dd, ssu] = True
+
+    # Split the dataset into training, validation and testing.
+    label_sum = paper_labels.sum(1)
+    times=hg.nodes['paper'].data['time']
+
+    pre_range = {t: True for t in times.numpy() if t != None and t < 2014}
+    train_range = {t: True for t in times.numpy() if t != None and t >= 2014 and t <= 2016}
+    valid_range = {t: True for t in times.numpy() if t != None and t > 2016 and t <= 2017}
+    test_range = {t: True for t in times.numpy() if t != None and t > 2017}
+
+    pre_target_nodes = []
+    train_target_nodes = []
+    valid_target_nodes = []
+    test_target_nodes = []
+    target_type = 'paper'
+    rel_stop_list = ['self', 'rev_PF_in_L0', 'rev_PF_in_L5', 'rev_PV_Repository', 'rev_PV_Patent']
+
+    for p_id, _time in enumerate(times):
+        if float(_time.numpy()) in pre_range:
+            pre_target_nodes += [[p_id, _time]]
+        elif float(_time.numpy()) in train_range:
+            train_target_nodes += [[p_id, _time]]
+        elif float(_time.numpy()) in valid_range:
+            valid_target_nodes += [[p_id, _time]]
+        elif float(_time.numpy()) in test_range:
+            test_target_nodes += [[p_id, _time]]
+    pre_target_nodes = np.array(pre_target_nodes)
+    train_target_nodes = np.array(train_target_nodes)
+    valid_target_nodes = np.array(valid_target_nodes)
+    test_target_nodes = np.array(test_target_nodes)
+
+    train_idx = torch.tensor(train_target_nodes[:, 0], dtype=int)
+    val_idx = torch.tensor(valid_target_nodes[:, 0], dtype=int)
+    test_idx = torch.tensor(test_target_nodes[:, 0], dtype=int)
+
+    # Remove infrequent labels. Otherwise, some of the labels will not have instances
+    # in the training, validation or test set.
+    num_filter=-1
+    label_filter = paper_labels[train_idx].sum(0) > num_filter
+    label_filter = torch.logical_and(label_filter, paper_labels[val_idx].sum(0) > num_filter)
+    label_filter = torch.logical_and(label_filter, paper_labels[test_idx].sum(0) > num_filter)
+    paper_labels = paper_labels[:,label_filter]
+    paper_labels=paper_labels.float()
+    print('#labels:', paper_labels.shape[1])
+    if args.klloss:
+        paper_labels /= paper_labels.sum(axis=1).reshape(-1, 1)
+
+
+    # Adjust training, validation and testing set to make sure all paper nodes
+    # in these sets have labels.
+    train_idx = train_idx[paper_labels[train_idx].sum(1) > 0]
+    val_idx = val_idx[paper_labels[val_idx].sum(1) > 0]
+    test_idx = test_idx[paper_labels[test_idx].sum(1) > 0]
+    # All labels have instances.
+    if num_filter>=0:
+        assert np.all(paper_labels[train_idx].sum(0).numpy() > 0)
+        assert np.all(paper_labels[val_idx].sum(0).numpy() > 0)
+        assert np.all(paper_labels[test_idx].sum(0).numpy() > 0)
+        # All instances have labels.
+        assert np.all(paper_labels[train_idx].sum(1).numpy() > 0)
+        assert np.all(paper_labels[val_idx].sum(1).numpy() > 0)
+        assert np.all(paper_labels[test_idx].sum(1).numpy() > 0)
+
+    # Remove field nodes from the graph.
+    etypes = []
+    for etype in hg.canonical_etypes:
+        if etype[0] != 'field' and etype[2] != 'field':
+            etypes.append(etype)
+    hg = dgl.edge_type_subgraph(hg, etypes)
+    print(hg.canonical_etypes)
+
+    # Construct node features.
+    # TODO(zhengda) we need to construct the node features for author nodes.
+    ntypes = []
+    if args.use_node_features:
+        node_feats = []
+        for ntype in hg.ntypes:
+            print(ntype)
+            if ntype != 'field' and 'emb' in hg.nodes[ntype].data:
+                feat = hg.nodes[ntype].data.pop('emb')
+                node_feats.append(feat.share_memory_())
+                ntypes.append(ntype)
+            else:
+                node_feats.append(None)
+    else:
+        node_feats = [None] * len(hg.ntypes)
+    print('nodes with features:', ntypes)
+    #print(node_feats)
+
+    category = 'paper'
+    return hg, node_feats, paper_labels, train_idx, val_idx, test_idx, category, paper_labels.shape[1]
+
+
 def load_univ_homo_data(args):
     ogb_dataset = False
     oag_data = False
@@ -173,9 +287,8 @@ def load_univ_homo_data(args):
     elif args.dataset == 'am':
         dataset = AMDataset()
     elif args.dataset == 'oag_cs':
-        raise NotImplementedError
-        #dataset = load_oag(dataset='cs')
-        #oag_data = True
+        dataset = load_oag_nc_lp(args)
+        oag_data = True
     elif args.dataset == 'ogbn-mag':
         dataset = DglNodePropPredDataset(name=args.dataset)
         ogb_dataset = True
@@ -221,32 +334,13 @@ def load_univ_homo_data(args):
         else:
             node_feats = [None] * num_of_ntype
     elif oag_data:
-        hg = dataset
+        hg, node_feats, labels, train_idx, val_idx, test_idx, category, num_classes = dataset
 
         num_rels = len(hg.canonical_etypes)
         num_of_ntype = len(hg.ntypes)
 
-        category = 'paper'
-        labels = hg.nodes[category].data.pop('labels')
-        num_classes = labels.shape[1]
-        valid_mask = hg.nodes[category].data.pop('val_mask')
-        train_mask = hg.nodes[category].data.pop('train_mask')
-        test_mask = hg.nodes[category].data.pop('test_mask')
 
-        train_idx = torch.nonzero(train_mask).squeeze()
-        test_idx = torch.nonzero(test_mask).squeeze()
-        val_idx = torch.nonzero(valid_mask).squeeze()
-        if args.use_node_features:
-            node_feats = []
-            for ntype in hg.ntypes:
-                if len(hg.nodes[ntype].data) == 0:
-                    node_feats.append(None)
-                else:
-                    assert len(hg.nodes[ntype].data) == 1
-                    feat = hg.nodes[ntype].data.pop('feat')
-                    node_feats.append(feat.share_memory_())
-        else:
-            node_feats = [None] * num_of_ntype
+
 
     else:
         # Load from hetero-graph
@@ -330,6 +424,8 @@ def load_univ_homo_data(args):
     valid_g=g
     test_g=g
     multilabel=False
+    if oag_data:
+        multilabel=True
     return train_idx,val_idx,test_idx,target_idx,labels,num_classes,node_feats,cluster_assignments,\
            metapaths, train_edges, test_edges, valid_edges, train_g, valid_g, test_g,multilabel,num_rels
 
