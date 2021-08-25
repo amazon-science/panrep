@@ -1830,11 +1830,10 @@ def load_acm_univ_data(args):
     os.environ['PYTHONHASHSEED'] = str(seed)
     torch.backends.cudnn.deterministic = True
     torch.manual_seed(0)
-    data_url = 'https://s3.us-east-2.amazonaws.com/dgl.ai/dataset/ACM.mat'
+
     data_folder = '../data/acm/'
     data_file_path = '../data/acm/ACM.mat'
 
-    #urllib.request.urlretrieve(data_url, data_file_path)
     data = scipy.io.loadmat(data_file_path)
 
     G = dgl.heterograph({
